@@ -80,6 +80,28 @@ function parseUsage(value: unknown): UsageSummary | undefined {
   return usage.inputTokens === undefined && usage.outputTokens === undefined && usage.totalTokens === undefined ? undefined : usage;
 }
 
+function assertOfficialEndpoint(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('Responses endpoint 必须是官方 HTTPS 地址。');
+  }
+  if (
+    url.protocol !== 'https:'
+    || url.hostname !== 'api.zhizengzeng.com'
+    || url.port !== ''
+    || url.pathname !== '/v1/responses'
+    || url.username !== ''
+    || url.password !== ''
+    || url.search !== ''
+    || url.hash !== ''
+  ) {
+    throw new Error('Responses endpoint 必须是官方 HTTPS 地址。');
+  }
+  return url.toString();
+}
+
 /**
  * Minimal native-fetch Responses adapter. It never validates or executes the
  * returned text itself: the existing strict local ActionParser remains required.
@@ -95,10 +117,9 @@ export class ZhizengzengResponsesClient implements LLMClient {
   constructor(options: ZhizengzengResponsesOptions) {
     this.credentials = options.credentials;
     this.fetcher = options.fetcher ?? fetch;
-    this.baseUrl = options.baseUrl ?? DEFAULT_RESPONSES_URL;
+    this.baseUrl = assertOfficialEndpoint(options.baseUrl ?? DEFAULT_RESPONSES_URL);
     this.model = options.model ?? DEFAULT_RESPONSES_MODEL;
     this.timeoutMs = options.timeoutMs ?? 30_000;
-    if (!this.baseUrl.startsWith('https://')) throw new Error('Responses endpoint 必须使用 HTTPS。');
     if (!this.model.trim()) throw new Error('模型名称不能为空。');
     if (!Number.isInteger(this.timeoutMs) || this.timeoutMs < 1 || this.timeoutMs > 30_000) throw new Error('请求超时必须在 1–30000ms 内。');
   }
