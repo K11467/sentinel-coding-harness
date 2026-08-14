@@ -1,13 +1,26 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { describe, expect, test } from 'vitest';
 import {
   KEYCHAIN_ACCOUNT,
   KEYCHAIN_SERVICE,
   MacOSKeychain,
   SECURITY_EXECUTABLE,
+  nodeSecurityProcessRunner,
   type SecurityProcessOptions,
   type SecurityProcessResult,
   type SecurityProcessRunner,
 } from '../../src/credentials/keychain.js';
+
+const keychainSmokeEnabled = process.platform === 'darwin' && process.env.SENTINEL_KEYCHAIN_SMOKE === '1';
+
+function defaultKeychainPath(stdout: string | undefined): string {
+  const value = stdout?.trim().replace(/^"|"$/g, '');
+  if (!value) throw new Error('无法读取当前默认 Keychain 路径。');
+  return value;
+}
 
 class FakeProcessRunner implements SecurityProcessRunner {
   readonly calls: Array<{ command: string; args: readonly string[]; options: SecurityProcessOptions }> = [];
@@ -119,5 +132,46 @@ describe('MacOSKeychain', () => {
     await expect(macosKeychain(runner).readSecret()).rejects.not.toThrow(value);
   });
 
-  test.skip('真实临时 Keychain 验证已暂停：security 要求 -w 为最后一个选项，不能安全追加临时 Keychain 路径。', () => undefined);
+  test.runIf(keychainSmokeEnabled)('显式开启时仅在临时默认 Keychain 中验证随机虚拟凭据', async () => {
+    const temporaryDirectory = await mkdtemp(join(tmpdir(), 'sentinel-keychain-smoke-'));
+    const temporaryKeychain = join(temporaryDirectory, 'smoke.keychain-db');
+    const identity = {
+      service: `sentinel-smoke-service-${randomUUID()}`,
+      account: `sentinel-smoke-account-${randomUUID()}`,
+    };
+    const secret = `sentinel-smoke-secret-${randomUUID()}`;
+    let previousDefault: string | undefined;
+    let temporaryDefaultSelected = false;
+
+    try {
+      const defaultResult = await nodeSecurityProcessRunner.spawn(
+        SECURITY_EXECUTABLE,
+        ['default-keychain'],
+        { shell: false, captureStdout: true },
+      );
+      expect(defaultResult.exitCode).toBe(0);
+      previousDefault = defaultKeychainPath(defaultResult.stdout);
+
+      expect(
+        (await nodeSecurityProcessRunner.spawn(SECURITY_EXECUTABLE, ['create-keychain', temporaryKeychain], { shell: false })).exitCode,
+      ).toBe(0);
+      expect(
+        (await nodeSecurityProcessRunner.spawn(SECURITY_EXECUTABLE, ['default-keychain', '-s', temporaryKeychain], { shell: false })).exitCode,
+      ).toBe(0);
+      temporaryDefaultSelected = true;
+
+      const keychain = new MacOSKeychain({ platform: 'darwin', identity });
+      await keychain.set(secret);
+      await expect(keychain.status()).resolves.toEqual({ exists: true });
+      await expect(keychain.get()).resolves.toBe(secret);
+      await expect(keychain.clear()).resolves.toBeUndefined();
+      await expect(keychain.status()).resolves.toEqual({ exists: false });
+    } finally {
+      if (temporaryDefaultSelected && previousDefault) {
+        await nodeSecurityProcessRunner.spawn(SECURITY_EXECUTABLE, ['default-keychain', '-s', previousDefault], { shell: false });
+      }
+      await nodeSecurityProcessRunner.spawn(SECURITY_EXECUTABLE, ['delete-keychain', temporaryKeychain], { shell: false });
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    }
+  });
 });
