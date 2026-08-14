@@ -73,6 +73,10 @@ describe('ActionParser', () => {
     expectInvalid({ type: 'finish', reason: '完成', summary: 'a'.repeat(1001) }, 'schema_invalid');
   });
 
+  test('以 semantic_invalid 拒绝绝对 action 路径', () => {
+    expectInvalid({ type: 'read_file', reason: '读取文件', path: '/tmp/outside.txt' }, 'semantic_invalid');
+  });
+
   test.each([
     ['npm test', []],
     ['npm', ['test; rm -rf /']],
@@ -96,6 +100,7 @@ describe('HarnessConfig', () => {
     expect(config.workspaceRoot).toBe(process.cwd());
     expect(config.maxSteps).toBe(6);
     expect(config.maxCostCny).toBe(70);
+    expect(config.model).toBe('gpt-5.4-mini');
     expect(config.allowedCommands).toEqual([]);
     expect(config.policyRules).toEqual([]);
   });
@@ -108,6 +113,11 @@ describe('HarnessConfig', () => {
     expect(() => parseHarnessConfig({ maxSteps: 13 })).toThrow();
     expect(() => parseHarnessConfig({ maxCostCny: 0 })).toThrow();
     expect(() => parseHarnessConfig({ maxCostCny: 71 })).toThrow();
+  });
+
+  test('接受 maxSteps 和 maxCostCny 的合法边界', () => {
+    expect(parseHarnessConfig({ maxSteps: 1, maxCostCny: 1 }).maxSteps).toBe(1);
+    expect(parseHarnessConfig({ maxSteps: 12, maxCostCny: 70 }).maxCostCny).toBe(70);
   });
 });
 
@@ -127,10 +137,18 @@ describe('SessionState', () => {
 
   test('接受规范 status、完整 pending action 和限定 stopReason', () => {
     expect(sessionStateSchema.parse(base)).toMatchObject(base);
-    expect(sessionStateSchema.parse({ ...base, status: 'stopped', stopReason: 'max_steps', pendingAction: undefined })).toMatchObject({
+    expect(sessionStateSchema.parse({ ...base, status: 'stopped', stopReason: 'max_steps' })).toMatchObject({
       status: 'stopped',
       stopReason: 'max_steps'
     });
+  });
+
+  test('按 status 关联 stopReason 和 pendingAction', () => {
+    expect(() => sessionStateSchema.parse({ ...base, status: 'completed', pendingAction: undefined })).toThrow();
+    expect(() => sessionStateSchema.parse({ ...base, status: 'running', stopReason: 'tool_error', pendingAction: undefined })).toThrow();
+    expect(() => sessionStateSchema.parse({ ...base, pendingAction: undefined })).toThrow();
+    expect(sessionStateSchema.parse(base)).toMatchObject(base);
+    expect(() => sessionStateSchema.parse({ ...base, status: 'completed', stopReason: 'finished' })).toThrow();
   });
 
   test('拒绝超出最近摘要上限和未知 status/stopReason', () => {
@@ -141,5 +159,9 @@ describe('SessionState', () => {
     expect(() => sessionStateSchema.parse({ ...base, recentFeedback: Array(9).fill(feedback) })).toThrow();
     expect(() => sessionStateSchema.parse({ ...base, status: 'unknown' })).toThrow();
     expect(() => sessionStateSchema.parse({ ...base, stopReason: 'unknown' })).toThrow();
+    expect(() => sessionStateSchema.parse({ ...base, extra: true })).toThrow();
+    expect(() => sessionStateSchema.parse({ ...base, step: -1 })).toThrow();
+    expect(() => sessionStateSchema.parse({ ...base, recentActions: [{ ...actionSummary, createdAt: 'not-a-date' }] })).toThrow();
+    expect(() => sessionStateSchema.parse({ ...base, pendingAction: { ...base.pendingAction, actionHash: '' } })).toThrow();
   });
 });
