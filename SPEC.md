@@ -1,7 +1,7 @@
 # Sentinel Coding Harness 规格说明
 
-**版本：** 0.1.0（实现前确认版）  
-**项目类型：** Coding Agent Harness（纯 CLI）  
+**版本：** 0.1.0（实现前确认版）
+**项目类型：** Coding Agent Harness（纯 CLI）
 **主要贡献：** 可验证的治理护栏与 HITL（Human-in-the-Loop）状态机
 
 ## 1. 问题陈述
@@ -82,46 +82,46 @@ Sentinel 是一个本地运行的命令行 Coding Agent Harness。它把单次 L
 
 ### 5.1 Action 协议与 LLM 适配
 
-**输入：** `AgentContext`（任务、工作区、可用工具、相关记忆、最近反馈）与预算。  
-**行为：** `LLMClient.decide()` 返回一个平坦、严格校验的 JSON envelope：`type`、`reason`、`path`、`content`、`command`、`args`、`note`、`summary`；不用字段填空字符串或空数组。`ActionParser` 先做 Zod 结构校验，再做按 action type 的语义校验。  
-**输出：** 判定为有效的 discriminated `Action`，或带可读错误的 `InvalidAction`。  
+**输入：** `AgentContext`（任务、工作区、可用工具、相关记忆、最近反馈）与预算。
+**行为：** `LLMClient.decide()` 返回一个平坦、严格校验的 JSON envelope：`type`、`reason`、`path`、`content`、`command`、`args`、`note`、`summary`；不用字段填空字符串或空数组。`ActionParser` 先做 Zod 结构校验，再做按 action type 的语义校验。
+**输出：** 判定为有效的 discriminated `Action`，或带可读错误的 `InvalidAction`。
 **边界/错误：** provider 不能稳定支持 strict JSON Schema 时，适配器仅接受完整 JSON 文本并仍经同一 Zod/语义校验；无效 action 只能得到一次格式修复提示，第二次失败即安全停止。
 
 生产适配器使用 `POST https://api.zhizengzeng.com/v1/responses`，默认模型 `gpt-5.4-mini`。它优先请求 Responses 的 strict JSON Schema 格式，并且即使 provider 已声明结构化输出，也一定在本地再次验证；该接口形态与 OpenAI 的 Responses 规范一致。[智增增 Responses 文档](https://doc.zhizengzeng.com/doc-7762827) [OpenAI Responses API 参考](https://platform.openai.com/docs/api-reference/responses)
 
 ### 5.2 Agent 主循环
 
-**输入：** 已加载配置、任务文本、会话状态和 `LLMClient`。  
-**行为：** 依次构造上下文、请求 action、调用 `Guardrail`、执行/暂停、记录工具结果并追加反馈，直到终态。  
-**输出：** `completed`、`waiting_approval`、`blocked`、`failed` 或 `budget_exhausted` 会话。  
+**输入：** 已加载配置、任务文本、会话状态和 `LLMClient`。
+**行为：** 依次构造上下文、请求 action、调用 `Guardrail`、执行/暂停、记录工具结果并追加反馈，直到终态。
+**输出：** `completed`、`waiting_approval`、`blocked`、`failed` 或 `budget_exhausted` 会话。
 **边界/错误：** 默认最多 6 步、单一网络超时 30 秒、最多一次网络重试、API 预算达到 70 元对应的应用内部上限前停止。真实费用以 provider usage 字段/手工账单为准，无法从客户端完全强制保证。
 
 ### 5.3 工具分发
 
-**输入：** 有效 `Action` 和已验证工作区。  
-**行为：** 仅分派 `list_files`、`read_file`、`write_file`、`run_command`、`run_tests`、`remember` 和 `finish`。命令经 `spawn(command, args)` 执行，不使用 `shell: true` 或字符串拼接 shell。  
-**输出：** 统一 `ToolResult`（成功、退出码、截断输出、错误类别）。  
+**输入：** 有效 `Action` 和已验证工作区。
+**行为：** 仅分派 `list_files`、`read_file`、`write_file`、`run_command`、`run_tests`、`remember` 和 `finish`。命令经 `spawn(command, args)` 执行，不使用 `shell: true` 或字符串拼接 shell。
+**输出：** 统一 `ToolResult`（成功、退出码、截断输出、错误类别）。
 **边界/错误：** 大文件、二进制文件、超时和非法参数均返回受控错误；所有路径首先经围栏检查。
 
 ### 5.4 治理与审批
 
-**输入：** action、配置策略、会话 ID、审批状态。  
-**行为：** 生成确定性的 `PolicyDecision`；需要审批时保存一个不可变的 pending action；`approve` 只允许执行匹配会话及 action hash 的动作。  
-**输出：** `allow`、`require_approval` 或 `deny`，附带规则 ID、风险等级、理由。  
+**输入：** action、配置策略、会话 ID、审批状态。
+**行为：** 生成确定性的 `PolicyDecision`；需要审批时保存一个不可变的 pending action；`approve` 只允许执行匹配会话及 action hash 的动作。
+**输出：** `allow`、`require_approval` 或 `deny`，附带规则 ID、风险等级、理由。
 **边界/错误：** 过期审批、篡改会话文件、无效 action hash、拒绝动作和审批后路径变化均不能执行目标动作。
 
 ### 5.5 反馈、记忆和配置
 
-**输入：** 工具结果、测试输出、用户保存的 note 与 `harness.yaml`。  
-**行为：** 归类测试结果、截断/脱敏反馈、保存可检索记忆、解析配置并施加默认安全值。  
-**输出：** 下轮上下文和可审计状态。  
+**输入：** 工具结果、测试输出、用户保存的 note 与 `harness.yaml`。
+**行为：** 归类测试结果、截断/脱敏反馈、保存可检索记忆、解析配置并施加默认安全值。
+**输出：** 下轮上下文和可审计状态。
 **边界/错误：** 无效 YAML、未知策略、过长 note、无匹配记忆和测试命令缺失均返回显式错误；不得静默放宽策略。
 
 ### 5.6 凭据与 CLI
 
-**输入：** 隐藏输入的 API Key，以及 `credentials set|status|clear`、`run`、`resume`、`demo` 命令。  
-**行为：** 通过 macOS `security` 保存 `se-project` 服务下的 `zhizengzeng-api-key`；`status` 只显示是否存在；`clear` 删除对应项。  
-**输出：** 无密钥内容的操作结果与退出码。  
+**输入：** 隐藏输入的 API Key，以及 `credentials set|status|clear`、`run`、`resume`、`demo` 命令。
+**行为：** 通过 macOS `security` 保存 `se-project` 服务下的 `zhizengzeng-api-key`；`status` 只显示是否存在；`clear` 删除对应项。
+**输出：** 无密钥内容的操作结果与退出码。
 **边界/错误：** 非 macOS、Keychain 被锁定、Key 不存在或取消输入时不得回退为命令行参数、日志或明文文件。
 
 ## 6. 非功能性需求

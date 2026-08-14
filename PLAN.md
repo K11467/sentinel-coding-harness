@@ -235,6 +235,6 @@ Worktree：`feature/cli-provider`（T12–T15）。
 
 | Task | 状态 | 实际 subagent | 红测试 commit | 绿实现 commit | PR / 验证 |
 | --- | --- | --- | --- | --- | --- |
-| P01 | 进行中 | 主 agent | - | - | `git status --ignored` |
+| P01 | 已完成 | 主 agent（Codex） | 不适用：仅文档 | `227d3d4` | `git diff --check`；敏感串扫描通过 |
 | P02 | 待开始 | 异构 agent | - | - | - |
 | P03–T18 | 待开始 | - | - | - | - |
