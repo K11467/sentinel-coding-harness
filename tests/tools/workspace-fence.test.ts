@@ -97,10 +97,12 @@ describe('WorkspaceTools', () => {
   test('拒绝读取二进制、含 NUL 或超过 256 KiB 的文件', async () => {
     const { root } = await createWorkspace();
     await writeFile(join(root, 'binary.bin'), Buffer.from([0x61, 0x00, 0x62]));
+    await writeFile(join(root, 'invalid-utf8.bin'), Buffer.from([0xff]));
     await writeFile(join(root, 'large.txt'), 'a'.repeat(256 * 1024 + 1), 'utf8');
     const tools = new WorkspaceTools(root);
 
     await expect(tools.read('binary.bin')).resolves.toMatchObject({ ok: false, errorCode: 'binary_file' });
+    await expect(tools.read('invalid-utf8.bin')).resolves.toMatchObject({ ok: false, errorCode: 'binary_file' });
     await expect(tools.read('large.txt')).resolves.toMatchObject({ ok: false, errorCode: 'file_too_large' });
   });
 
