@@ -1,12 +1,22 @@
+import { execFile } from 'node:child_process';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
+import { randomUUID } from 'node:crypto';
 import { describe, expect, test } from 'vitest';
 import {
   KEYCHAIN_ACCOUNT,
   KEYCHAIN_SERVICE,
   MacOSKeychain,
+  SECURITY_EXECUTABLE,
+  nodeSecurityProcessRunner,
   type SecurityProcessOptions,
   type SecurityProcessResult,
   type SecurityProcessRunner,
 } from '../../src/credentials/keychain.js';
+
+const execFileAsync = promisify(execFile);
 
 class FakeProcessRunner implements SecurityProcessRunner {
   readonly calls: Array<{ command: string; args: readonly string[]; options: SecurityProcessOptions }> = [];
@@ -32,9 +42,9 @@ describe('MacOSKeychain', () => {
 
     expect(runner.calls).toEqual([
       {
-        command: 'security',
+        command: SECURITY_EXECUTABLE,
         args: ['add-generic-password', '-U', '-s', KEYCHAIN_SERVICE, '-a', KEYCHAIN_ACCOUNT, '-w'],
-        options: { shell: false, stdin: secret },
+        options: { shell: false, stdin: `${secret}\n${secret}\n` },
       },
     ]);
     expect(runner.calls[0]!.args.join(' ')).not.toContain(secret);
@@ -46,7 +56,7 @@ describe('MacOSKeychain', () => {
 
     await expect(macosKeychain(runner).status()).resolves.toEqual({ exists: true });
     expect(runner.calls[0]).toEqual({
-      command: 'security',
+      command: SECURITY_EXECUTABLE,
       args: ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', KEYCHAIN_ACCOUNT],
       options: { shell: false },
     });
@@ -80,7 +90,7 @@ describe('MacOSKeychain', () => {
 
     await expect(macosKeychain(runner).clear()).rejects.toMatchObject({ code: 'NOT_FOUND' });
     expect(runner.calls[0]).toEqual({
-      command: 'security',
+      command: SECURITY_EXECUTABLE,
       args: ['delete-generic-password', '-s', KEYCHAIN_SERVICE, '-a', KEYCHAIN_ACCOUNT],
       options: { shell: false },
     });
@@ -93,4 +103,66 @@ describe('MacOSKeychain', () => {
     await expect(macosKeychain(runner).clear()).rejects.toMatchObject({ code: 'KEYCHAIN_LOCKED' });
     await expect(macosKeychain(runner).clear()).rejects.not.toThrow(secret);
   });
+
+  test('get 只将 -w stdout 作为内存返回值，不进入 status、错误或日志', async () => {
+    const value = 'provider-memory-only-value';
+    const runner = new FakeProcessRunner({ exitCode: 0, stdout: value });
+    const keychain = macosKeychain(runner);
+
+    await expect(keychain.get()).resolves.toBe(value);
+    expect(runner.calls).toEqual([
+      {
+        command: SECURITY_EXECUTABLE,
+        args: ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', KEYCHAIN_ACCOUNT, '-w'],
+        options: { shell: false },
+      },
+    ]);
+  });
+
+  test('readSecret 的 stdout 或 stderr 不会进入异常', async () => {
+    const value = 'read-output-must-not-escape';
+    const runner = new FakeProcessRunner({ exitCode: 1, stdout: value, stderr: `not permitted: ${value}` });
+
+    await expect(macosKeychain(runner).readSecret()).rejects.not.toThrow(value);
+  });
+
+  test.skipIf(process.platform !== 'darwin')('使用临时 Keychain 验证 set、find 与 delete，不接触默认 Keychain', async () => {
+    const temporaryDirectory = await mkdtemp(join(tmpdir(), 'harness-keychain-'));
+    const temporaryKeychain = join(temporaryDirectory, 'credentials.keychain-db');
+    const temporaryPassword = randomUUID();
+    const value = `dummy-${randomUUID()}`;
+    let created = false;
+
+    const temporarySecurity = async (args: readonly string[]): Promise<void> => {
+      try {
+        await execFileAsync(SECURITY_EXECUTABLE, args, { timeout: 5_000 });
+      } catch {
+        throw new Error('临时 Keychain 命令失败');
+      }
+    };
+
+    try {
+      await temporarySecurity(['create-keychain', '-p', temporaryPassword, temporaryKeychain]);
+      created = true;
+      await temporarySecurity(['unlock-keychain', '-p', temporaryPassword, temporaryKeychain]);
+
+      const temporaryRunner: SecurityProcessRunner = {
+        spawn(command, args, options) {
+          return nodeSecurityProcessRunner.spawn(command, [...args, temporaryKeychain], options);
+        },
+      };
+      const keychain = new MacOSKeychain({ platform: 'darwin', runner: temporaryRunner });
+
+      await keychain.set(value);
+      await expect(keychain.status()).resolves.toEqual({ exists: true });
+      expect((await keychain.readSecret()) === value).toBe(true);
+      await keychain.clear();
+      await expect(keychain.status()).resolves.toEqual({ exists: false });
+    } finally {
+      if (created) {
+        await temporarySecurity(['delete-keychain', temporaryKeychain]).catch(() => undefined);
+      }
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    }
+  }, 15_000);
 });
