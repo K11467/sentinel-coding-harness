@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 import { loadHarnessConfig, type LoadHarnessConfigOptions, type LoadedHarnessConfig } from './config/load.js';
 import { AgentLoop, InMemorySessionStore } from './core/agent-loop.js';
 import { ActionParser } from './domain/actions.js';
