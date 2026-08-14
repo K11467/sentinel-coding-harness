@@ -201,6 +201,31 @@ describe('CLI session commands and offline demo', () => {
     expect(result.stderr).toEqual([]);
   });
 
+  test('redacts a malformed runtime session identifier before it reaches stdout', async () => {
+    const cwd = await workspace();
+    await writeConfig(cwd);
+    const leakedValue = 'runtime-output-value-must-not-be-printed';
+    const result = invoke(['run', 'safe', 'task'], {
+      cwd,
+      credentials: {
+        status: async () => ({ exists: true }),
+        set: async () => undefined,
+        clear: async () => undefined,
+      },
+      runtime: {
+        run: async () => session(`apiKey=${leakedValue}`),
+        resume: async () => session(),
+        approve: async () => session(),
+        reject: async () => session(),
+        demo: async () => session('demo'),
+      },
+    });
+
+    await expect(result.code).resolves.toBe(EXIT.OK);
+    expect(result.stdout.join('\n')).not.toContain(leakedValue);
+    expect(result.stdout.join('\n')).toContain('[REDACTED]');
+  });
+
   test.each([
     ['resume', ['resume', 'session-r'], 'resume'],
     ['approve', ['approve', 'session-a', 'sha256:expected'], 'approve'],
