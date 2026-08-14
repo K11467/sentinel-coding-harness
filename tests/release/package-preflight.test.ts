@@ -41,6 +41,8 @@ describe('release package preflight', () => {
     expect(report.files).toContain('README.md');
     expect(report.files).toContain('LICENSE');
     expect(report.files).toContain('DEMO_GUIDE.md');
+    expect(report.files).toContain('REFERENCES.md');
+    expect(report.files).toContain('SPEC.md');
     expect(report.files).toContain('THREAT_MODEL.md');
     expect(report.files).toContain('examples/harness.yaml');
     expect(report.files).not.toContain('src/cli.ts');
@@ -75,6 +77,8 @@ function isReleaseFile(path: string): boolean {
     || path === 'README.md'
     || path === 'LICENSE'
     || path === 'DEMO_GUIDE.md'
+    || path === 'REFERENCES.md'
+    || path === 'SPEC.md'
     || path === 'THREAT_MODEL.md'
     || path.startsWith('dist/')
     || path.startsWith('examples/');
