@@ -95,14 +95,28 @@ const workerErrorCodes = new Set<WorkspaceToolErrorCode>([
 const workspaceWorkerSource = String.raw`
 const fs = require('node:fs');
 const path = require('node:path');
-const input = JSON.parse(process.argv[1]);
 const maximumFileBytes = 256 * 1024;
+const maximumInputBytes = maximumFileBytes * 6 + 16 * 1024;
 
 function controlledError(errorCode) {
   const exception = new Error(errorCode);
   exception.workspaceErrorCode = errorCode;
   return exception;
 }
+
+function readInput() {
+  const rawInput = fs.readFileSync(0);
+  if (rawInput.byteLength > maximumInputBytes) {
+    throw controlledError('io_error');
+  }
+  try {
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(rawInput));
+  } catch {
+    throw controlledError('io_error');
+  }
+}
+
+let input;
 
 function isWithin(root, candidate) {
   const fromRoot = path.relative(root, candidate);
@@ -190,6 +204,7 @@ function writeTextFile() {
 }
 
 try {
+  input = readInput();
   verifyWorkspaceAndCwd();
   let result;
   if (input.operation === 'list') {
@@ -371,43 +386,66 @@ export class WorkspaceTools {
       let output = '';
       let child;
       try {
-        child = spawn(process.execPath, ['-e', workspaceWorkerSource, JSON.stringify(input)], {
+        child = spawn(process.execPath, ['-e', workspaceWorkerSource], {
           cwd,
           shell: false,
-          stdio: ['ignore', 'pipe', 'ignore']
+          stdio: ['pipe', 'pipe', 'ignore']
         });
       } catch {
         resolveWorker({ ok: false, errorCode: 'io_error' });
         return;
       }
 
+      let settled = false;
+      const finish = (response: WorkspaceWorkerResponse): void => {
+        if (!settled) {
+          settled = true;
+          resolveWorker(response);
+        }
+      };
       child.stdout?.setEncoding('utf8');
       child.stdout?.on('data', (chunk: string) => {
         output += chunk;
       });
       child.once('error', () => {
-        resolveWorker({ ok: false, errorCode: 'io_error' });
+        finish({ ok: false, errorCode: 'io_error' });
+      });
+      child.stdin?.once('error', () => {
+        finish({ ok: false, errorCode: 'io_error' });
       });
       child.once('close', () => {
+        if (settled) {
+          return;
+        }
         try {
           const parsed: unknown = JSON.parse(output);
           if (typeof parsed !== 'object' || parsed === null || !('ok' in parsed)) {
-            resolveWorker({ ok: false, errorCode: 'io_error' });
+            finish({ ok: false, errorCode: 'io_error' });
             return;
           }
           if (parsed.ok === false && 'errorCode' in parsed && isWorkerErrorCode(parsed.errorCode)) {
-            resolveWorker({ ok: false, errorCode: parsed.errorCode });
+            finish({ ok: false, errorCode: parsed.errorCode });
             return;
           }
           if (parsed.ok === true) {
-            resolveWorker(parsed as WorkspaceWorkerResponse);
+            finish(parsed as WorkspaceWorkerResponse);
             return;
           }
         } catch {
           // The worker never returns raw errors to the caller.
         }
-        resolveWorker({ ok: false, errorCode: 'io_error' });
+        finish({ ok: false, errorCode: 'io_error' });
       });
+      if (child.stdin === null) {
+        child.kill();
+        finish({ ok: false, errorCode: 'io_error' });
+        return;
+      }
+      try {
+        child.stdin.end(JSON.stringify(input), 'utf8');
+      } catch {
+        finish({ ok: false, errorCode: 'io_error' });
+      }
     });
   }
 
