@@ -97,6 +97,7 @@ Worktree：`feature/core-protocol`。P03 后执行，可由 2 个子 agent 顺�
 - **绿实现：** 明确状态转移，状态持久化可注入。
 - **验证：** `npm test -- agent-loop`。
 - **依赖：** T01、T02。
+- **实际完成：** 红/绿为 `3788a2b` / `68eff8c`，以 `73cb2a4` 合入。7 个定向、43 个全量测试和 typecheck 通过；只接入 fake dispatcher。Sol 明确记录 Guardrail、HITL、预算、重复动作与 provider timeout/retry 由后续任务负责，不能把本 task 当作完整生产主循环。
 
 ### T04 — 工作区文件工具与真实路径围栏（约 4–5 分钟）
 
@@ -164,6 +165,7 @@ Worktree：`feature/governance-feedback`（T06–T09）与 `feature/memory-confi
 - **绿实现：** 确定性排序与截断。
 - **验证：** `npm test -- memory`。
 - **依赖：** T01。
+- **实际完成：** 红/绿为 `f2e6227` / `d1b2d46`，以 `c8eb967` 合入。6 个定向、38 个全量测试与 typecheck 通过；JSONL 坏行会显式报错，检索按关键词重叠、新近度、ID 稳定排序且最多返回 5 条。
 
 ### T11 — YAML 配置和默认值（约 3–5 分钟）
 
@@ -255,4 +257,7 @@ Worktree：`feature/cli-provider`（T12–T15）。
 | T00 | 已完成 | Terra 子 agent；Sol 只读复核 | `72d82bb` | `04d5914` | 红测实际退出 1；受信 CA 下 `npm ci`、定向 smoke、typecheck 均退出 0 |
 | T01 | 已完成（含审查修复） | Terra 子 agent；Sol 只读复核 | `b04062a`、`d889477` | `4b9537a`、`ca0a8f4` | 31 个定向 / 32 个全量测试、typecheck、diff、精确 secret scan 通过 |
 | T02 | 已完成 | Terra 子 agent；Sol 只读复核 | `e6a8a80` | `997e75e` | 4 个定向 / 36 个全量测试、typecheck、diff、精确 secret scan 通过 |
-| T03–T18 | 待开始 | - | - | - | - |
+| T03 | 已完成 | Terra 子 agent；Sol 只读复核 | `3788a2b` | `68eff8c` | 7 个定向 / 43 个全量测试、typecheck、diff、精确 secret scan 通过 |
+| T04 | 评审修复中 | Terra 子 agent；Sol 只读复核 | `f02d9ce` | `5c850d7`（暂未合入） | 发现 parent-symlink TOCTOU，必须补可重复竞态测试和安全实现 |
+| T10 | 已完成 | Terra 子 agent；Sol 只读复核 | `f2e6227` | `d1b2d46` | 6 个定向 / 38 个全量测试、typecheck、diff、精确 secret scan 通过 |
+| T05–T09、T11–T18 | 待开始 | - | - | - | - |
