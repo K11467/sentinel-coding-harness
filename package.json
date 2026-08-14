@@ -2,10 +2,15 @@
   "name": "sentinel-coding-harness",
   "version": "0.1.0",
   "private": true,
+  "bin": {
+    "sentinel": "dist/cli.js"
+  },
   "engines": {
     "node": ">=20"
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "demo": "npm run build && node dist/cli.js demo",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm test"
