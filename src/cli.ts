@@ -185,7 +185,7 @@ function loadCliConfig(
 
 function sessionSummary(session: SessionState): string {
   const reason = session.stopReason === undefined ? '' : `，stopReason=${session.stopReason}`;
-  return `会话 ${session.id}：status=${session.status}，step=${session.step}${reason}`;
+  return redactText(`会话 ${session.id}：status=${session.status}，step=${session.step}${reason}`, 1024);
 }
 
 async function runSessionCommand(
@@ -310,7 +310,7 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
 
     const configPath = parseConfigPath(argv.slice(2));
     const config = loadCliConfig(loadConfig, cwd, configPath);
-    writeStdout(`配置有效。workspaceRoot=${config.workspaceRoot}，maxSteps=${config.maxSteps}，maxCostCny=${config.maxCostCny}`);
+    writeStdout(redactText(`配置有效。workspaceRoot=${config.workspaceRoot}，maxSteps=${config.maxSteps}，maxCostCny=${config.maxCostCny}`, 1024));
     return EXIT.OK;
   } catch (error) {
     writeStderr(safeErrorMessage(error));
