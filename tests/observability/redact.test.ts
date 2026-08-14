@@ -18,7 +18,7 @@ describe('统一脱敏', () => {
     'password=hunter2',
     'secret: whispered',
     'token=abc123',
-    'plain sk-proj-abcdefghijklmnopqrstuvwxyz0123456789',
+    `plain ${['sk', '-proj-', 'abcdefghijklmnopqrstuvwxyz0123456789'].join('')}`,
     'short sk-safe',
     'encoded=sk%2Dproj%2Dabcdefghijklmnopqrstuvwxyz0123456789',
     '-----BEGIN PRIVATE KEY-----\nprivate-material\n-----END PRIVATE KEY-----',
