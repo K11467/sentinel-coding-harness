@@ -2,6 +2,8 @@ import { spawn } from 'node:child_process';
 
 export const KEYCHAIN_SERVICE = 'se-project';
 export const KEYCHAIN_ACCOUNT = 'zhizengzeng-api-key';
+/** Absolute executable path: credentials must never depend on PATH lookup. */
+export const SECURITY_EXECUTABLE = '/usr/bin/security';
 
 export type KeychainErrorCode =
   | 'UNSUPPORTED_PLATFORM'
@@ -33,6 +35,8 @@ export interface SecurityProcessOptions {
   readonly shell: false;
   /** Secret input is written directly to the child stdin and is never an argument. */
   readonly stdin?: string;
+  /** Only the provider-only read path may capture security's stdout. */
+  readonly captureStdout?: boolean;
 }
 
 export interface SecurityProcessResult {
@@ -67,26 +71,29 @@ export const nodeSecurityProcessRunner: SecurityProcessRunner = {
 
       let child;
       try {
-        child = spawn(command, args, { shell: options.shell, stdio: ['pipe', 'ignore', 'pipe'] });
+        child = spawn(command, args, {
+          shell: options.shell,
+          stdio: options.captureStdout ? ['pipe', 'pipe', 'pipe'] : ['pipe', 'ignore', 'pipe'],
+        });
       } catch {
         finish({ exitCode: 1 });
         return;
       }
 
-      child.stderr.on('data', (chunk: Buffer | string) => {
+      let stdout = '';
+      child.stdout?.on('data', (chunk: Buffer | string) => {
+        stdout += Buffer.from(chunk).toString('utf8');
+      });
+      child.stderr?.on('data', (chunk: Buffer | string) => {
         if (Buffer.byteLength(stderr, 'utf8') >= MAX_STDERR_BYTES) return;
         const remaining = MAX_STDERR_BYTES - Buffer.byteLength(stderr, 'utf8');
         stderr += Buffer.from(chunk).subarray(0, remaining).toString('utf8');
       });
-      child.stdin.on('error', () => undefined);
+      child.stdin?.on('error', () => undefined);
       child.once('error', () => finish({ exitCode: 1 }));
-      child.once('close', (code) => finish({ exitCode: code ?? 1, stderr }));
+      child.once('close', (code) => finish({ exitCode: code ?? 1, stdout, stderr }));
 
-      if (options.stdin !== undefined) {
-        child.stdin.end(options.stdin);
-      } else {
-        child.stdin.end();
-      }
+      child.stdin?.end(options.stdin);
     });
   },
 };
@@ -116,9 +123,9 @@ export class MacOSKeychain {
     if (secret.length === 0) throw new KeychainError('INPUT_MISSING');
 
     const result = await this.runner.spawn(
-      'security',
+      SECURITY_EXECUTABLE,
       ['add-generic-password', '-U', '-s', KEYCHAIN_SERVICE, '-a', KEYCHAIN_ACCOUNT, '-w'],
-      { shell: false, stdin: secret },
+      { shell: false, stdin: `${secret}\n${secret}\n` },
     );
     this.assertSuccess(result);
   }
@@ -126,7 +133,7 @@ export class MacOSKeychain {
   async status(): Promise<CredentialStatus> {
     this.assertMacOS();
     const result = await this.runner.spawn(
-      'security',
+      SECURITY_EXECUTABLE,
       ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', KEYCHAIN_ACCOUNT],
       { shell: false },
     );
@@ -139,11 +146,31 @@ export class MacOSKeychain {
   async clear(): Promise<void> {
     this.assertMacOS();
     const result = await this.runner.spawn(
-      'security',
+      SECURITY_EXECUTABLE,
       ['delete-generic-password', '-s', KEYCHAIN_SERVICE, '-a', KEYCHAIN_ACCOUNT],
       { shell: false },
     );
     this.assertSuccess(result);
+  }
+
+  /**
+   * Provider-only read path. The value is returned directly from security's
+   * stdout to the caller's memory and is never included in status or errors.
+   */
+  async readSecret(): Promise<string> {
+    this.assertMacOS();
+    const result = await this.runner.spawn(
+      SECURITY_EXECUTABLE,
+      ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', KEYCHAIN_ACCOUNT, '-w'],
+      { shell: false, captureStdout: true },
+    );
+    this.assertSuccess(result);
+    return result.stdout ?? '';
+  }
+
+  /** Alias retained for the provider integration's concise credential read. */
+  async get(): Promise<string> {
+    return this.readSecret();
   }
 
   private assertMacOS(): void {
