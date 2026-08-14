@@ -2,7 +2,7 @@ import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { EXIT, runCli, type CliDependencies, type CliRuntime } from '../../src/cli.js';
+import { EXIT, readHiddenFromTty, runCli, type CliDependencies, type CliRuntime } from '../../src/cli.js';
 import type { SessionState } from '../../src/domain/session.js';
 
 const temporaryDirectories: string[] = [];
@@ -164,6 +164,42 @@ describe('CLI credentials commands', () => {
     expect(received).toEqual([enteredValue]);
     expect(result.stdout).toEqual(['凭据已保存到系统安全存储。']);
     expect([...result.stdout, ...result.stderr].join('\n')).not.toContain(enteredValue);
+  });
+
+  test('credentials set safely refuses the default reader when stdin is not an interactive TTY', async () => {
+    let sets = 0;
+    const result = invoke(['credentials', 'set'], {
+      credentials: {
+        status: async () => ({ exists: false }),
+        set: async () => { sets += 1; },
+        clear: async () => undefined,
+      },
+    });
+
+    await expect(result.code).resolves.toBe(EXIT.UNAVAILABLE);
+    expect(sets).toBe(0);
+    expect(result.stderr.join('\n')).toContain('TTY');
+  });
+
+  test('the TTY reader returns a hidden input without writing its value to the output stream', async () => {
+    const writes: string[] = [];
+    const handlers = new Map<string, (value: Buffer) => void>();
+    const input = {
+      isTTY: true,
+      setRawMode: vi.fn(),
+      resume: vi.fn(),
+      pause: vi.fn(),
+      on: (event: string, handler: (value: Buffer) => void) => { handlers.set(event, handler); },
+      removeListener: (event: string) => { handlers.delete(event); },
+    };
+    const output = { isTTY: true, write: (value: string) => { writes.push(value); } };
+    const reading = readHiddenFromTty(input, output);
+    handlers.get('data')!(Buffer.from('hidden-tty-value\r'));
+
+    await expect(reading).resolves.toBe('hidden-tty-value');
+    expect(writes.join('')).not.toContain('hidden-tty-value');
+    expect(input.setRawMode).toHaveBeenNthCalledWith(1, true);
+    expect(input.setRawMode).toHaveBeenLastCalledWith(false);
   });
 
   test('credentials clear delegates once and keeps subprocess-style failure text redacted', async () => {
@@ -328,7 +364,36 @@ describe('CLI session commands and offline demo', () => {
     expect(calls).toEqual(['session-deny:sha256:expected']);
   });
 
-  test('demo uses the built-in scripted mock without calling fetch', async () => {
+  test('inspect and audit use the injected durable runtime without displaying raw audit payloads', async () => {
+    const cwd = await workspace();
+    await writeConfig(cwd);
+    const secret = 'audit-secret-must-not-be-printed';
+    const runtime: CliRuntime = {
+      run: async () => session(),
+      resume: async () => session(),
+      approve: async () => session(),
+      reject: async () => session(),
+      demo: async () => session(),
+      inspect: async ({ sessionId }) => session(sessionId),
+      audit: async () => [{
+        timestamp: '2026-08-14T00:00:00.000Z',
+        sessionId: 'inspectable',
+        event: 'tool_result',
+        tool: { kind: 'write_file', ok: true, output: `Authorization: Bearer ${secret}` },
+      }],
+    };
+
+    const inspected = invoke(['inspect', 'inspectable'], { cwd, runtime });
+    await expect(inspected.code).resolves.toBe(EXIT.OK);
+    expect(inspected.stdout.join('\n')).toContain('inspectable');
+
+    const audited = invoke(['audit', 'inspectable'], { cwd, runtime });
+    await expect(audited.code).resolves.toBe(EXIT.OK);
+    expect(audited.stdout).toEqual(['审计记录：1。']);
+    expect([...audited.stdout, ...audited.stderr].join('\n')).not.toContain(secret);
+  });
+
+  test('demo reports all three deterministic offline mechanism scenarios without calling fetch', async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);
     try {
@@ -336,7 +401,11 @@ describe('CLI session commands and offline demo', () => {
 
       await expect(result.code).resolves.toBe(EXIT.OK);
       expect(fetchSpy).not.toHaveBeenCalled();
-      expect(result.stdout).toEqual([expect.stringContaining('demo-session')]);
+      expect(result.stdout).toEqual([
+        expect.stringContaining('dangerous-action'),
+        expect.stringContaining('feedback-adaptation'),
+        expect.stringContaining('approval-once'),
+      ]);
       expect(result.stderr).toEqual([]);
     } finally {
       vi.unstubAllGlobals();

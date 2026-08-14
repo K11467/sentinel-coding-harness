@@ -20,7 +20,9 @@ describe('compiled CLI entrypoint', () => {
       encoding: 'utf8',
     });
     expect(demo.status).toBe(0);
-    expect(demo.stdout).toContain('demo-session');
+    expect(demo.stdout).toContain('dangerous-action');
+    expect(demo.stdout).toContain('feedback-adaptation');
+    expect(demo.stdout).toContain('approval-once');
     expect(demo.stderr).toBe('');
   });
 });
