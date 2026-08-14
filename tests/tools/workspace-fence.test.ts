@@ -116,6 +116,25 @@ describe('WorkspaceTools', () => {
     });
   });
 
+  test('允许恰好 256 KiB 的写入，并完整读回内容', async () => {
+    const { root } = await createWorkspace();
+    const tools = new WorkspaceTools(root);
+    const content = '\u0001'.repeat(256 * 1024);
+
+    await expect(tools.write('at-limit.txt', content)).resolves.toEqual({
+      ok: true,
+      kind: 'write',
+      path: 'at-limit.txt',
+      bytesWritten: 256 * 1024
+    });
+    await expect(tools.read('at-limit.txt')).resolves.toEqual({
+      ok: true,
+      kind: 'read',
+      path: 'at-limit.txt',
+      content
+    });
+  });
+
   test.each(['list', 'read', 'write'] as const)(
     '验证后父目录被替换为工作区外链接时，%s 不会触及外部目标',
     async (operation) => {
