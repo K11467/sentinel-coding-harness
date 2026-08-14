@@ -1,11 +1,11 @@
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 import { describe, expect, test } from 'vitest';
 
-const root = fileURLToPath(new URL('../../', import.meta.url));
+const root = process.cwd();
 
 function read(relativePath: string): string {
-  return readFileSync(new URL(relativePath, `file://${root}`), 'utf8');
+  return readFileSync(resolve(root, relativePath), 'utf8');
 }
 
 describe('CI 配置', () => {
