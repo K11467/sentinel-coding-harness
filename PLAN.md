@@ -77,6 +77,7 @@ Worktree：`feature/core-protocol`。P03 后执行，可由 2 个子 agent 顺�
 - **绿实现：** schema 将有效 envelope 转为 discriminated `Action`；冻结配置默认值。
 - **验证：** `npm test -- tests/domain/actions.test.ts`，`npm run typecheck`。
 - **依赖：** P03、T00。
+- **实际完成：** 初始红/绿为 `b04062a` / `4b9537a`；Sol 审查发现 session 状态关联缺口后，补充红/绿为 `d889477` / `ca0a8f4`。最终 31 个定向契约测试和 32 个全量测试通过，typecheck 通过；不含真实 provider、凭据、循环或工具执行器。
 
 ### T02 — 抽象 LLM 与脚本化 mock（约 3–5 分钟）
 
@@ -251,4 +252,5 @@ Worktree：`feature/cli-provider`（T12–T15）。
 | P02 | 已完成：发现规约缺陷 | Cursor Agent（独立目录） | 不适用 | 未合入代码 | 问题清单、无仓库写入、P03 修订待复测 |
 | P03 | 已完成：修订获确认 | 主 agent（Codex） | 不适用 | `59f1152`（文档修订） | Cursor 首次问题清单、用户转述二次无阻塞结论并批准开工 |
 | T00 | 已完成 | Terra 子 agent；Sol 只读复核 | `72d82bb` | `04d5914` | 红测实际退出 1；受信 CA 下 `npm ci`、定向 smoke、typecheck 均退出 0 |
-| T01–T18 | 待开始 | - | - | - | - |
+| T01 | 已完成（含审查修复） | Terra 子 agent；Sol 只读复核 | `b04062a`、`d889477` | `4b9537a`、`ca0a8f4` | 31 个定向 / 32 个全量测试、typecheck、diff、精确 secret scan 通过 |
+| T02–T18 | 待开始 | - | - | - | - |
