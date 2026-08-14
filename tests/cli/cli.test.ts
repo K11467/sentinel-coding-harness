@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { EXIT, readHiddenFromTty, runCli, type CliDependencies, type CliRuntime } from '../../src/cli.js';
 import type { SessionState } from '../../src/domain/session.js';
+import type { AuditRecord } from '../../src/observability/audit.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -364,33 +365,94 @@ describe('CLI session commands and offline demo', () => {
     expect(calls).toEqual(['session-deny:sha256:expected']);
   });
 
-  test('inspect and audit use the injected durable runtime without displaying raw audit payloads', async () => {
+  test('inspect renders a waiting approval allowlist, and its displayed hash can be approved without leaking content', async () => {
     const cwd = await workspace();
     await writeConfig(cwd);
-    const secret = 'audit-secret-must-not-be-printed';
+    const content = 'write-content-must-not-be-printed';
+    const actionHash = 'sha256:inspect-approved-hash';
+    const approved: string[] = [];
+    const waiting: SessionState = {
+      id: 'inspectable',
+      status: 'waiting_approval',
+      step: 1,
+      task: 'safe test task',
+      recentActions: [],
+      recentFeedback: [],
+      pendingAction: {
+        action: { id: 'action-inspect', type: 'write_file', reason: '受控写入', path: 'docs/review.md', content },
+        actionHash,
+      },
+    };
+    const runtime: CliRuntime = {
+      run: async () => session(),
+      resume: async () => session(),
+      approve: async ({ sessionId, actionHash: inputHash }) => {
+        approved.push(`${sessionId}:${inputHash}`);
+        return session(sessionId);
+      },
+      reject: async () => session(),
+      demo: async () => session(),
+      inspect: async () => waiting,
+    };
+
+    const inspected = invoke(['inspect', 'inspectable'], { cwd, runtime });
+    await expect(inspected.code).resolves.toBe(EXIT.OK);
+    expect(inspected.stdout.join('\n')).toContain('type=write_file');
+    expect(inspected.stdout.join('\n')).toContain('path=docs/review.md');
+    expect(inspected.stdout.join('\n')).toContain(`actionHash=${actionHash}`);
+    expect(inspected.stdout.join('\n')).toContain('rule=approval.unknown-write');
+    expect(inspected.stdout.join('\n')).toContain('risk=high');
+    expect(inspected.stdout.join('\n')).not.toContain(content);
+
+    const hash = inspected.stdout.join('\n').match(/actionHash=([^，\n]+)/)?.[1];
+    expect(hash).toBe(actionHash);
+    const approval = invoke(['approve', 'inspectable', hash!], { cwd, runtime });
+    await expect(approval.code).resolves.toBe(EXIT.OK);
+    expect(approved).toEqual([`inspectable:${actionHash}`]);
+  });
+
+  test('audit writes only redacted, truncated whitelist summaries for policy, tool, and state records', async () => {
+    const cwd = await workspace();
+    await writeConfig(cwd);
+    const content = 'write-content-must-not-be-printed';
+    const token = 'audit-token-must-not-be-printed';
+    const records: AuditRecord[] = [{
+      timestamp: '2026-08-14T00:00:00.000Z',
+      sessionId: 'inspectable',
+      event: 'policy_decision',
+      action: { type: 'write_file', path: 'docs/review.md', contentBytes: content.length, content } as never,
+      policy: { effect: 'require_approval', ruleId: 'approval.unknown-write', risk: 'high', reason: '需要人工确认' },
+    }, {
+        timestamp: '2026-08-14T00:00:00.000Z',
+        sessionId: 'inspectable',
+        event: 'tool_result',
+        tool: { kind: 'write_file', ok: false, errorCode: 'nonzero_exit', output: `Authorization: Bearer ${token}` },
+      }, {
+        timestamp: '2026-08-14T00:00:00.000Z',
+        sessionId: 'inspectable',
+        event: 'state_transition',
+        state: { from: 'running', to: 'failed', reason: 'tool_error' },
+      }];
     const runtime: CliRuntime = {
       run: async () => session(),
       resume: async () => session(),
       approve: async () => session(),
       reject: async () => session(),
       demo: async () => session(),
-      inspect: async ({ sessionId }) => session(sessionId),
-      audit: async () => [{
-        timestamp: '2026-08-14T00:00:00.000Z',
-        sessionId: 'inspectable',
-        event: 'tool_result',
-        tool: { kind: 'write_file', ok: true, output: `Authorization: Bearer ${secret}` },
-      }],
+      audit: async () => records,
     };
-
-    const inspected = invoke(['inspect', 'inspectable'], { cwd, runtime });
-    await expect(inspected.code).resolves.toBe(EXIT.OK);
-    expect(inspected.stdout.join('\n')).toContain('inspectable');
 
     const audited = invoke(['audit', 'inspectable'], { cwd, runtime });
     await expect(audited.code).resolves.toBe(EXIT.OK);
-    expect(audited.stdout).toEqual(['审计记录：1。']);
-    expect([...audited.stdout, ...audited.stderr].join('\n')).not.toContain(secret);
+    const output = [...audited.stdout, ...audited.stderr].join('\n');
+    expect(audited.stdout).toHaveLength(4);
+    expect(output).toContain('策略');
+    expect(output).toContain('工具');
+    expect(output).toContain('状态');
+    expect(output).toContain('approval.unknown-write');
+    expect(output).toContain('tool_error');
+    expect(output).not.toContain(content);
+    expect(output).not.toContain(token);
   });
 
   test('demo reports all three deterministic offline mechanism scenarios without calling fetch', async () => {
