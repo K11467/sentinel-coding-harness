@@ -2,8 +2,9 @@ import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { EXIT, runCli, type CliDependencies, type CliRuntime } from '../../src/cli.js';
+import { EXIT, readHiddenFromTty, runCli, type CliDependencies, type CliRuntime } from '../../src/cli.js';
 import type { SessionState } from '../../src/domain/session.js';
+import type { AuditRecord } from '../../src/observability/audit.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -67,6 +68,53 @@ describe('CLI config/check and error boundary', () => {
     expect(result.stderr).toEqual([expect.stringContaining('未知命令')]);
   });
 
+  test('unknown argv never echoes an arbitrary operand', async () => {
+    const operand = 'opaque-user-value-must-not-be-echoed';
+    const result = invoke(['unknown-command', operand]);
+
+    await expect(result.code).resolves.toBe(EXIT.USAGE);
+    expect(result.stdout).toEqual([]);
+    expect(result.stderr.join('\n')).not.toContain(operand);
+    expect(result.stderr.join('\n')).toContain('未知命令');
+  });
+
+  test.each(['--api-key', '--api-key=key-value-must-not-be-used'])('rejects %s before loading config, credentials, or runtime', async (flag) => {
+    let configCalls = 0;
+    let credentialCalls = 0;
+    let runtimeCalls = 0;
+    const argv = flag === '--api-key' ? ['run', 'task', flag, 'key-value-must-not-be-used'] : ['run', 'task', flag];
+    const result = invoke(argv, {
+      loadConfig: () => {
+        configCalls += 1;
+        throw new Error('not reached');
+      },
+      credentials: {
+        status: async () => {
+          credentialCalls += 1;
+          return { exists: true };
+        },
+        set: async () => undefined,
+        clear: async () => undefined,
+      },
+      runtime: {
+        run: async () => {
+          runtimeCalls += 1;
+          return session();
+        },
+        resume: async () => session(),
+        approve: async () => session(),
+        reject: async () => session(),
+        demo: async () => session(),
+      },
+    });
+
+    await expect(result.code).resolves.toBe(EXIT.USAGE);
+    expect(configCalls).toBe(0);
+    expect(credentialCalls).toBe(0);
+    expect(runtimeCalls).toBe(0);
+    expect([...result.stdout, ...result.stderr].join('\n')).not.toContain('key-value-must-not-be-used');
+  });
+
   test('redacts injected config-loader failures before writing stderr', async () => {
     const secret = 'super-secret-value';
     const result = invoke(['config', 'check'], {
@@ -117,6 +165,42 @@ describe('CLI credentials commands', () => {
     expect(received).toEqual([enteredValue]);
     expect(result.stdout).toEqual(['凭据已保存到系统安全存储。']);
     expect([...result.stdout, ...result.stderr].join('\n')).not.toContain(enteredValue);
+  });
+
+  test('credentials set safely refuses the default reader when stdin is not an interactive TTY', async () => {
+    let sets = 0;
+    const result = invoke(['credentials', 'set'], {
+      credentials: {
+        status: async () => ({ exists: false }),
+        set: async () => { sets += 1; },
+        clear: async () => undefined,
+      },
+    });
+
+    await expect(result.code).resolves.toBe(EXIT.UNAVAILABLE);
+    expect(sets).toBe(0);
+    expect(result.stderr.join('\n')).toContain('TTY');
+  });
+
+  test('the TTY reader returns a hidden input without writing its value to the output stream', async () => {
+    const writes: string[] = [];
+    const handlers = new Map<string, (value: Buffer) => void>();
+    const input = {
+      isTTY: true,
+      setRawMode: vi.fn(),
+      resume: vi.fn(),
+      pause: vi.fn(),
+      on: (event: string, handler: (value: Buffer) => void) => { handlers.set(event, handler); },
+      removeListener: (event: string) => { handlers.delete(event); },
+    };
+    const output = { isTTY: true, write: (value: string) => { writes.push(value); } };
+    const reading = readHiddenFromTty(input, output);
+    handlers.get('data')!(Buffer.from('hidden-tty-value\r'));
+
+    await expect(reading).resolves.toBe('hidden-tty-value');
+    expect(writes.join('')).not.toContain('hidden-tty-value');
+    expect(input.setRawMode).toHaveBeenNthCalledWith(1, true);
+    expect(input.setRawMode).toHaveBeenLastCalledWith(false);
   });
 
   test('credentials clear delegates once and keeps subprocess-style failure text redacted', async () => {
@@ -259,7 +343,119 @@ describe('CLI session commands and offline demo', () => {
     expect(result.stderr).toEqual([]);
   });
 
-  test('demo uses the built-in scripted mock without calling fetch', async () => {
+  test('deny is a reject alias and forwards the exact session and hash to the runtime', async () => {
+    const cwd = await workspace();
+    await writeConfig(cwd);
+    const calls: string[] = [];
+    const result = invoke(['deny', 'session-deny', 'sha256:expected'], {
+      cwd,
+      runtime: {
+        run: async () => session(),
+        resume: async () => session(),
+        approve: async () => session(),
+        reject: async ({ sessionId, actionHash }) => {
+          calls.push(`${sessionId}:${actionHash}`);
+          return session(sessionId);
+        },
+        demo: async () => session(),
+      },
+    });
+
+    await expect(result.code).resolves.toBe(EXIT.OK);
+    expect(calls).toEqual(['session-deny:sha256:expected']);
+  });
+
+  test('inspect renders a waiting approval allowlist, and its displayed hash can be approved without leaking content', async () => {
+    const cwd = await workspace();
+    await writeConfig(cwd);
+    const content = 'write-content-must-not-be-printed';
+    const actionHash = 'sha256:inspect-approved-hash';
+    const approved: string[] = [];
+    const waiting: SessionState = {
+      id: 'inspectable',
+      status: 'waiting_approval',
+      step: 1,
+      task: 'safe test task',
+      recentActions: [],
+      recentFeedback: [],
+      pendingAction: {
+        action: { id: 'action-inspect', type: 'write_file', reason: '受控写入', path: 'docs/review.md', content },
+        actionHash,
+      },
+    };
+    const runtime: CliRuntime = {
+      run: async () => session(),
+      resume: async () => session(),
+      approve: async ({ sessionId, actionHash: inputHash }) => {
+        approved.push(`${sessionId}:${inputHash}`);
+        return session(sessionId);
+      },
+      reject: async () => session(),
+      demo: async () => session(),
+      inspect: async () => waiting,
+    };
+
+    const inspected = invoke(['inspect', 'inspectable'], { cwd, runtime });
+    await expect(inspected.code).resolves.toBe(EXIT.OK);
+    expect(inspected.stdout.join('\n')).toContain('type=write_file');
+    expect(inspected.stdout.join('\n')).toContain('path=docs/review.md');
+    expect(inspected.stdout.join('\n')).toContain(`actionHash=${actionHash}`);
+    expect(inspected.stdout.join('\n')).toContain('rule=approval.unknown-write');
+    expect(inspected.stdout.join('\n')).toContain('risk=high');
+    expect(inspected.stdout.join('\n')).not.toContain(content);
+
+    const hash = inspected.stdout.join('\n').match(/actionHash=([^，\n]+)/)?.[1];
+    expect(hash).toBe(actionHash);
+    const approval = invoke(['approve', 'inspectable', hash!], { cwd, runtime });
+    await expect(approval.code).resolves.toBe(EXIT.OK);
+    expect(approved).toEqual([`inspectable:${actionHash}`]);
+  });
+
+  test('audit writes only redacted, truncated whitelist summaries for policy, tool, and state records', async () => {
+    const cwd = await workspace();
+    await writeConfig(cwd);
+    const content = 'write-content-must-not-be-printed';
+    const token = 'audit-token-must-not-be-printed';
+    const records: AuditRecord[] = [{
+      timestamp: '2026-08-14T00:00:00.000Z',
+      sessionId: 'inspectable',
+      event: 'policy_decision',
+      action: { type: 'write_file', path: 'docs/review.md', contentBytes: content.length, content } as never,
+      policy: { effect: 'require_approval', ruleId: 'approval.unknown-write', risk: 'high', reason: '需要人工确认' },
+    }, {
+        timestamp: '2026-08-14T00:00:00.000Z',
+        sessionId: 'inspectable',
+        event: 'tool_result',
+        tool: { kind: 'write_file', ok: false, errorCode: 'nonzero_exit', output: `Authorization: Bearer ${token}` },
+      }, {
+        timestamp: '2026-08-14T00:00:00.000Z',
+        sessionId: 'inspectable',
+        event: 'state_transition',
+        state: { from: 'running', to: 'failed', reason: 'tool_error' },
+      }];
+    const runtime: CliRuntime = {
+      run: async () => session(),
+      resume: async () => session(),
+      approve: async () => session(),
+      reject: async () => session(),
+      demo: async () => session(),
+      audit: async () => records,
+    };
+
+    const audited = invoke(['audit', 'inspectable'], { cwd, runtime });
+    await expect(audited.code).resolves.toBe(EXIT.OK);
+    const output = [...audited.stdout, ...audited.stderr].join('\n');
+    expect(audited.stdout).toHaveLength(4);
+    expect(output).toContain('策略');
+    expect(output).toContain('工具');
+    expect(output).toContain('状态');
+    expect(output).toContain('approval.unknown-write');
+    expect(output).toContain('tool_error');
+    expect(output).not.toContain(content);
+    expect(output).not.toContain(token);
+  });
+
+  test('demo reports all three deterministic offline mechanism scenarios without calling fetch', async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);
     try {
@@ -267,7 +463,11 @@ describe('CLI session commands and offline demo', () => {
 
       await expect(result.code).resolves.toBe(EXIT.OK);
       expect(fetchSpy).not.toHaveBeenCalled();
-      expect(result.stdout).toEqual([expect.stringContaining('demo-session')]);
+      expect(result.stdout).toEqual([
+        expect.stringContaining('dangerous-action'),
+        expect.stringContaining('feedback-adaptation'),
+        expect.stringContaining('approval-once'),
+      ]);
       expect(result.stderr).toEqual([]);
     } finally {
       vi.unstubAllGlobals();

@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
 import { loadHarnessConfig, type LoadHarnessConfigOptions, type LoadedHarnessConfig } from './config/load.js';
-import { AgentLoop, InMemorySessionStore } from './core/agent-loop.js';
-import { ActionParser } from './domain/actions.js';
-import type { HarnessConfig } from './domain/config.js';
+import { createProductionRuntime } from './cli-runtime.js';
+import { MacOSKeychain } from './credentials/keychain.js';
+import { runMechanismScenarios } from './demo/scenarios.js';
 import type { SessionState } from './domain/session.js';
-import { ScriptedMockLLM } from './llm/scripted-mock.js';
+import type { AuditRecord } from './observability/audit.js';
 import { redactText } from './observability/redact.js';
+import { PolicyEngine } from './security/policy.js';
 
 /** Stable process-style results for CLI callers and the later executable wrapper. */
 export const EXIT = {
@@ -32,6 +33,8 @@ export interface CredentialStore {
   status(): Promise<{ exists: boolean }>;
   set(value: string | undefined): Promise<void>;
   clear(): Promise<void>;
+  /** Provider-only read method. The CLI never prints its return value. */
+  get?(): Promise<string>;
 }
 
 /** Adapter seam for provider/session/approval modules that are merged after T14. */
@@ -40,6 +43,8 @@ export interface CliRuntime {
   resume(input: { sessionId: string; config: LoadedHarnessConfig }): Promise<SessionState>;
   approve(input: { sessionId: string; actionHash: string; config: LoadedHarnessConfig }): Promise<SessionState>;
   reject(input: { sessionId: string; actionHash: string; config: LoadedHarnessConfig }): Promise<SessionState>;
+  inspect?(input: { sessionId: string; config: LoadedHarnessConfig }): Promise<SessionState>;
+  audit?(input: { sessionId: string; config: LoadedHarnessConfig }): Promise<AuditRecord[]>;
   demo(): Promise<SessionState>;
 }
 
@@ -76,6 +81,98 @@ const unavailableCredentials: CredentialStore = {
   },
 };
 
+type HiddenInput = {
+  readonly isTTY?: boolean;
+  setRawMode?: (enabled: boolean) => unknown;
+  resume?: () => unknown;
+  pause?: () => unknown;
+  on?: (event: string, listener: (value: Buffer | string | Error) => void) => unknown;
+  removeListener?: (event: string, listener: (value: Buffer | string | Error) => void) => unknown;
+};
+
+type HiddenOutput = {
+  readonly isTTY?: boolean;
+  write(value: string): unknown;
+};
+
+/**
+ * Reads one credential only from an interactive terminal while raw mode is on.
+ * No typed character is written to the terminal, command line, logs, or errors.
+ */
+export function readHiddenFromTty(input: HiddenInput = process.stdin, output: HiddenOutput = process.stderr): Promise<string | undefined> {
+  if (
+    input.isTTY !== true
+    || output.isTTY !== true
+    || typeof input.setRawMode !== 'function'
+    || typeof input.on !== 'function'
+    || typeof input.removeListener !== 'function'
+  ) {
+    throw new CliUnavailableError('凭据设置需要交互 TTY；非交互输入已被安全拒绝。');
+  }
+
+  const setRawMode = input.setRawMode;
+  const subscribe = input.on;
+  const unsubscribe = input.removeListener;
+
+  output.write('请输入 API Key（隐藏输入，回车确认；Ctrl-C 取消）：');
+  return new Promise((resolve, reject) => {
+    let value = '';
+    let settled = false;
+    const cleanup = (): void => {
+      unsubscribe('data', onData);
+      unsubscribe('error', onData);
+      setRawMode(false);
+      input.pause?.();
+    };
+    const finish = (result: string | undefined, error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      output.write('\n');
+      if (error === undefined) resolve(result);
+      else reject(error);
+    };
+    const onData = (chunk: Buffer | string | Error): void => {
+      if (chunk instanceof Error) {
+        finish(undefined, new CliUnavailableError('隐藏凭据输入不可用；未保存任何内容。'));
+        return;
+      }
+      for (const character of (Buffer.isBuffer(chunk) ? chunk.toString('utf8') : chunk)) {
+        if (character === '\u0003') {
+          finish(undefined);
+          return;
+        }
+        if (character === '\r' || character === '\n') {
+          finish(value);
+          return;
+        }
+        if (character === '\u007f' || character === '\b') {
+          value = value.slice(0, -1);
+          continue;
+        }
+        value += character;
+      }
+    };
+
+    setRawMode(true);
+    input.resume?.();
+    subscribe('data', onData);
+    subscribe('error', onData);
+  });
+}
+
+function demoSession(): SessionState {
+  return {
+    id: 'demo-mechanisms',
+    status: 'completed',
+    step: 0,
+    task: '运行离线确定性机制演示。',
+    stopReason: 'finished',
+    recentActions: [],
+    recentFeedback: [],
+  };
+}
+
 function unavailableRuntime(): CliRuntime {
   const fail = async (): Promise<SessionState> => {
     throw new CliUnavailableError('当前运行环境未提供 Provider 或会话适配器；请完成运行时集成后重试。');
@@ -86,35 +183,24 @@ function unavailableRuntime(): CliRuntime {
     approve: fail,
     reject: fail,
     async demo() {
-      const client = new ScriptedMockLLM([{
-        type: 'finish',
-        reason: '离线 mock 演示安全结束。',
-        summary: '离线 mock 演示已完成；没有访问网络或真实 Provider。',
-      }]);
-      const sessions = new InMemorySessionStore();
-      const config: HarnessConfig = {
-        workspaceRoot: process.cwd(),
-        model: 'offline-scripted-mock',
-        maxSteps: 1,
-        maxCostCny: 1,
-        allowedCommands: [],
-        policyRules: [],
-      };
-      const loop = new AgentLoop({
-        config,
-        client,
-        parser: new ActionParser(() => 'demo-finish-action'),
-        dispatcher: { async dispatch() { return { category: 'passed', summary: 'demo 不会执行工具。' }; } },
-        sessions,
-      });
-      return loop.run({
-        id: 'demo-session',
-        status: 'created',
-        step: 0,
-        task: '运行离线安全演示。',
-        recentActions: [],
-        recentFeedback: [],
-      });
+      await runMechanismScenarios();
+      return demoSession();
+    },
+  };
+}
+
+function supportsProviderCredentials(credentials: CredentialStore): credentials is CredentialStore & { get(): Promise<string> } {
+  return typeof credentials.get === 'function';
+}
+
+function defaultRuntime(credentials: CredentialStore): CliRuntime {
+  if (!supportsProviderCredentials(credentials)) return unavailableRuntime();
+  const runtime = createProductionRuntime({ credentials });
+  return {
+    ...runtime,
+    async demo() {
+      await runMechanismScenarios();
+      return demoSession();
     },
   };
 }
@@ -151,7 +237,7 @@ function splitConfigArgument(args: readonly string[]): { positional: string[]; c
       continue;
     }
     if (argument.startsWith('--')) {
-      throw new CliUsageError(`不支持的选项：${argument}`);
+      throw new CliUsageError('不支持的选项。');
     }
     positional.push(argument);
   }
@@ -170,7 +256,7 @@ function safeErrorMessage(error: unknown): string {
 }
 
 function usage(): string {
-  return '用法：sentinel <config check|run <task>|resume <session>|approve <session> <hash>|reject <session> <hash>|credentials status|credentials set|credentials clear|demo> [--config <path>]';
+  return '用法：sentinel <config check|run <task>|resume <session>|approve <session> <hash>|reject|deny <session> <hash>|inspect <session>|audit <session>|credentials status|credentials set|credentials clear|demo> [--config <path>]';
 }
 
 function loadCliConfig(
@@ -188,6 +274,61 @@ function loadCliConfig(
 function sessionSummary(session: SessionState): string {
   const reason = session.stopReason === undefined ? '' : `，stopReason=${session.stopReason}`;
   return redactText(`会话 ${session.id}：status=${session.status}，step=${session.step}${reason}`, 1024);
+}
+
+const actionTypes = new Set(['list_files', 'read_file', 'write_file', 'run_command', 'run_tests', 'remember', 'finish']);
+const policyEffects = new Set(['allow', 'require_approval', 'deny']);
+const policyRisks = new Set(['low', 'medium', 'high', 'critical']);
+const sessionStatuses = new Set(['created', 'running', 'waiting_approval', 'completed', 'stopped', 'blocked', 'failed', 'budget_exhausted', 'cancelled']);
+
+function safeDisplay(value: unknown, maxBytes = 256): string {
+  return typeof value === 'string'
+    ? redactText(value.replace(/[\r\n\0]/g, ' '), maxBytes)
+    : 'unknown';
+}
+
+function safeEnum(value: unknown, allowed: ReadonlySet<string>): string {
+  return typeof value === 'string' && allowed.has(value) ? value : 'unknown';
+}
+
+/** Displays only approval metadata, never a pending write body or command output. */
+function inspectionSummary(session: SessionState, config: LoadedHarnessConfig): string {
+  const lines = [sessionSummary(session)];
+  if (session.status !== 'waiting_approval' || session.pendingAction === undefined) return lines.join('\n');
+
+  const { action, actionHash } = session.pendingAction;
+  const details = action.type === 'list_files'
+    ? action.path === undefined ? '' : `，path=${safeDisplay(action.path)}`
+    : action.type === 'read_file' || action.type === 'write_file'
+      ? `，path=${safeDisplay(action.path)}`
+      : action.type === 'run_command'
+        ? `，command=${safeDisplay(action.command)}`
+        : '';
+  const decision = new PolicyEngine(config).decide(action);
+  lines.push(`待审批：type=${action.type}${details}，actionHash=${safeDisplay(actionHash)}`);
+  lines.push(`策略：effect=${safeEnum(decision.effect, policyEffects)}，rule=${safeDisplay(decision.ruleId)}，risk=${safeEnum(decision.risk, policyRisks)}，reason=${safeDisplay(decision.reason)}`);
+  return lines.join('\n');
+}
+
+/** Converts one normalized audit record through a fixed, non-serializing display allowlist. */
+function auditSummary(record: AuditRecord): string {
+  const actionType = safeEnum(record.action?.type, actionTypes);
+  switch (record.event) {
+    case 'policy_decision':
+      return `策略：action=${actionType}，effect=${safeEnum(record.policy?.effect, policyEffects)}，rule=${safeDisplay(record.policy?.ruleId)}，risk=${safeEnum(record.policy?.risk, policyRisks)}，reason=${safeDisplay(record.policy?.reason)}`;
+    case 'tool_result': {
+      const exitCode = Number.isSafeInteger(record.tool?.exitCode) ? `，exitCode=${record.tool!.exitCode}` : '';
+      const errorCode = record.tool?.errorCode === undefined ? '' : `，error=${safeDisplay(record.tool.errorCode)}`;
+      const output = record.tool?.output === undefined ? '' : `，summary=${safeDisplay(record.tool.output)}`;
+      return `工具：action=${actionType}，kind=${safeEnum(record.tool?.kind, actionTypes)}，ok=${record.tool?.ok === true ? 'true' : 'false'}${exitCode}${errorCode}${output}`;
+    }
+    case 'state_transition': {
+      const reason = record.state?.reason === undefined ? '' : `，reason=${safeDisplay(record.state.reason)}`;
+      return `状态：from=${safeEnum(record.state?.from, sessionStatuses)}，to=${safeEnum(record.state?.to, sessionStatuses)}${reason}`;
+    }
+    default:
+      return '审计：未识别条目。';
+  }
 }
 
 async function runSessionCommand(
@@ -234,13 +375,32 @@ async function runSessionCommand(
     return EXIT.OK;
   }
 
+  if (command === 'inspect' || command === 'audit') {
+    if (positional.length !== 1 || !isSafeIdentifier(positional[0]!)) {
+      throw new CliUsageError(`${command} 需要一个安全的 session 标识。`);
+    }
+    const input = { sessionId: positional[0]!, config };
+    if (command === 'inspect') {
+      if (runtime.inspect === undefined) throw new CliUnavailableError('当前运行环境未提供持久会话检查功能。');
+      writeStdout(inspectionSummary(await runtime.inspect(input), config));
+      return EXIT.OK;
+    }
+    if (runtime.audit === undefined) throw new CliUnavailableError('当前运行环境未提供审计读取功能。');
+    const records = await runtime.audit(input);
+    writeStdout(`审计记录：${records.length}。`);
+    for (const record of records) {
+      writeStdout(auditSummary(record));
+    }
+    return EXIT.OK;
+  }
+
   throw new CliUsageError(`未知会话命令：${command}`);
 }
 
 async function runCredentials(
   args: readonly string[],
   credentials: CredentialStore,
-  readHidden: (() => Promise<string | undefined>) | undefined,
+  readHidden: () => Promise<string | undefined>,
   writeStdout: (line: string) => void,
 ): Promise<number> {
   if (args.length !== 1) {
@@ -254,9 +414,6 @@ async function runCredentials(
       return EXIT.OK;
     }
     case 'set': {
-      if (readHidden === undefined) {
-        throw new CliUnavailableError('当前运行环境未提供隐藏凭据输入；请完成 Keychain 凭据集成后重试。');
-      }
       const secret = await readHidden();
       await credentials.set(secret);
       writeStdout('凭据已保存到系统安全存储。');
@@ -281,8 +438,9 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
   const writeStderr = dependencies.writeStderr ?? ((line: string) => process.stderr.write(`${line}\n`));
   const cwd = dependencies.cwd ?? process.cwd();
   const loadConfig = dependencies.loadConfig ?? loadHarnessConfig;
-  const credentials = dependencies.credentials ?? unavailableCredentials;
-  const runtime = dependencies.runtime ?? unavailableRuntime();
+  const credentials = dependencies.credentials ?? new MacOSKeychain();
+  const runtime = dependencies.runtime ?? defaultRuntime(credentials);
+  const readHidden = dependencies.readHidden ?? readHiddenFromTty;
 
   try {
     rejectApiKeyArgument(argv);
@@ -292,22 +450,25 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
     }
 
     if (argv[0] === 'credentials') {
-      return await runCredentials(argv.slice(1), credentials, dependencies.readHidden, writeStdout);
+      return await runCredentials(argv.slice(1), credentials, readHidden, writeStdout);
     }
 
     if (argv[0] === 'demo') {
       if (argv.length !== 1) throw new CliUsageError('demo 不接受额外参数。');
-      const session = await runtime.demo();
-      writeStdout(sessionSummary(session));
+      const report = await runMechanismScenarios();
+      for (const scenario of report.scenarios) {
+        writeStdout(`演示 ${scenario.name}：通过。`);
+      }
       return EXIT.OK;
     }
 
-    if (argv[0] === 'run' || argv[0] === 'resume' || argv[0] === 'approve' || argv[0] === 'reject') {
-      return await runSessionCommand(argv[0], argv.slice(1), loadConfig, cwd, credentials, runtime, writeStdout);
+    if (argv[0] === 'run' || argv[0] === 'resume' || argv[0] === 'approve' || argv[0] === 'reject' || argv[0] === 'deny' || argv[0] === 'inspect' || argv[0] === 'audit') {
+      const command = argv[0] === 'deny' ? 'reject' : argv[0];
+      return await runSessionCommand(command, argv.slice(1), loadConfig, cwd, credentials, runtime, writeStdout);
     }
 
     if (argv[0] !== 'config' || argv[1] !== 'check') {
-      throw new CliUsageError(`未知命令：${argv.join(' ') || '(empty)'}。${usage()}`);
+      throw new CliUsageError(`未知命令。${usage()}`);
     }
 
     const configPath = parseConfigPath(argv.slice(2));
