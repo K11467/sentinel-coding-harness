@@ -132,6 +132,25 @@ describe('loadHarnessConfig', () => {
     expect(() => loadHarnessConfig({ cwd })).toThrow(/allow|危险|配置无效/);
   });
 
+  test.each(['-c', '-e', '--eval'])('rejects interpreter semantic argument from testCommand: %s', async (argument) => {
+    const cwd = await workspace();
+    await yaml(cwd, `testCommand: { command: npm, args: [test, ${JSON.stringify(argument)}] }\n`);
+
+    expect(() => loadHarnessConfig({ cwd })).toThrow(/testCommand|配置无效/);
+  });
+
+  test.each(['-c', '-e', '--eval'])('rejects interpreter semantic argument from allowedCommands: %s', async (argument) => {
+    const cwd = await workspace();
+    await yaml(cwd, [
+      'testCommand: { command: npm, args: [test] }',
+      'allowedCommands:',
+      '  - command: eslint',
+      `    argsPrefix: [${JSON.stringify(argument)}]`
+    ].join('\n'));
+
+    expect(() => loadHarnessConfig({ cwd })).toThrow(/allow|危险|配置无效/);
+  });
+
   test('loads the committed example without allowing model-provided test commands', async () => {
     expect(loadHarnessConfig({
       cwd: process.cwd(),
