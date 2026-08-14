@@ -59,6 +59,34 @@ describe('统一脱敏', () => {
     expect(result).toBe('你好…');
     expect(Buffer.byteLength(result, 'utf8')).toBeLessThanOrEqual(9);
   });
+
+  test('只处理 own entries，并安全标记 getter、循环、过深和危险键', () => {
+    const inherited = Object.create({ accessToken: 'inherited-access-token' }) as { label: string };
+    inherited.label = 'safe';
+    const getterInput = Object.defineProperty({}, 'details', {
+      enumerable: true,
+      get: () => {
+        throw new Error('getter-secret-at-/private/path');
+      },
+    });
+    const cycle: Record<string, unknown> = { secretKey: 'cycle-secret' };
+    cycle.self = cycle;
+    let deep: Record<string, unknown> = { privateKey: 'deep-private-key' };
+    for (let index = 0; index < 20; index += 1) {
+      deep = { next: deep };
+    }
+    const protoInput = JSON.parse('{"safe":"yes","__proto__":{"accessToken":"proto-secret"}}') as Record<string, unknown>;
+
+    const result = redact({ inherited, getterInput, cycle, deep, protoInput });
+    const serialized = JSON.stringify(result);
+
+    expect(result).toMatchObject({ inherited: { label: 'safe' }, getterInput: { details: '[REDACTED]' } });
+    expect(serialized).not.toContain('inherited-access-token');
+    expect(serialized).not.toContain('getter-secret-at-/private/path');
+    expect(serialized).not.toContain('cycle-secret');
+    expect(serialized).not.toContain('deep-private-key');
+    expect(serialized).not.toContain('proto-secret');
+  });
 });
 
 describe('AuditLog', () => {
@@ -105,4 +133,75 @@ describe('AuditLog', () => {
     );
     await expect(audit.append({ sessionId: 'session-1', event: 'state_transition' })).rejects.not.toThrow(directory);
   });
+
+  test.each([
+    ['apiKey', 'apiKey=raw-api-camel-secret'],
+    ['api_key', '{"api_key":"raw-api-under-secret"}'],
+    ['api-key', 'X-API-Key: raw-api-header-secret'],
+    ['clientSecret', 'clientSecret=raw-client-camel-secret'],
+    ['client_secret', 'https://example.test/?client_secret=raw-client-query-secret'],
+    ['accessToken', 'accessToken=raw-access-camel-secret'],
+    ['access_token', '{"access_token":"raw-access-under-secret"}'],
+    ['secretKey', 'secretKey=raw-secret-key'],
+    ['privateKey', '{"privateKey":"raw-private-key"}'],
+  ])('隐藏 %s 的原始值，不进入字符串、嵌套值或审计输出', async (field, input) => {
+    const rawValue = input.match(/raw-[a-z-]+/)?.[0];
+    const directory = await mkdtemp(join(tmpdir(), 'sentinel-audit-sensitive-'));
+    const filePath = join(directory, 'audit.jsonl');
+    const audit = new AuditLog(filePath);
+
+    const text = redactText(input);
+    const nested = redact({ nested: { [field]: rawValue }, note: input });
+    await audit.append({
+      sessionId: 'session-sensitive',
+      event: 'policy_decision',
+      action: { type: 'write_file', reason: input },
+      policy: { effect: 'allow', ruleId: 'safe-write', risk: 'low' },
+    });
+
+    const rawLog = await readFile(filePath, 'utf8');
+    const readBack = await audit.read();
+
+    expect(rawValue).toBeDefined();
+    expect(text).toContain('[REDACTED]');
+    expect(text).not.toContain(rawValue as string);
+    expect(JSON.stringify(nested)).not.toContain(rawValue as string);
+    expect(rawLog).not.toContain(rawValue as string);
+    expect(JSON.stringify(readBack)).not.toContain(rawValue as string);
+  });
+
+  test('拒绝 getter、继承属性和 JSON 原型污染，并折叠异常详情', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'sentinel-audit-invalid-'));
+    const audit = new AuditLog(join(directory, 'audit.jsonl'));
+    const getterEvent = Object.defineProperties({}, {
+      sessionId: {
+        enumerable: true,
+        get: () => {
+          throw new Error('secret-from-getter-/private/path');
+        },
+      },
+      event: { enumerable: true, value: 'state_transition' },
+    });
+    const inheritedEvent = Object.create({ sessionId: 'inherited-session', event: 'state_transition' });
+    const protoEvent = JSON.parse(
+      '{"sessionId":"session-1","event":"state_transition","__proto__":{"privateKey":"proto-private-secret"}}',
+    );
+
+    for (const event of [getterEvent, inheritedEvent, protoEvent]) {
+      await expect(audit.append(event as never)).rejects.toThrow('Invalid audit event.');
+      await expect(audit.append(event as never)).rejects.not.toThrow(/secret|path/);
+    }
+  });
+
+  test.each([0.5, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])(
+    '拒绝不安全的工具 exitCode：%s',
+    async (exitCode) => {
+      const directory = await mkdtemp(join(tmpdir(), 'sentinel-audit-exit-'));
+      const audit = new AuditLog(join(directory, 'audit.jsonl'));
+
+      await expect(
+        audit.append({ sessionId: 'session-1', event: 'tool_result', tool: { kind: 'run_tests', ok: false, exitCode } }),
+      ).rejects.toThrow('Invalid audit event.');
+    },
+  );
 });
