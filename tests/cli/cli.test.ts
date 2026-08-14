@@ -67,6 +67,53 @@ describe('CLI config/check and error boundary', () => {
     expect(result.stderr).toEqual([expect.stringContaining('未知命令')]);
   });
 
+  test('unknown argv never echoes an arbitrary operand', async () => {
+    const operand = 'opaque-user-value-must-not-be-echoed';
+    const result = invoke(['unknown-command', operand]);
+
+    await expect(result.code).resolves.toBe(EXIT.USAGE);
+    expect(result.stdout).toEqual([]);
+    expect(result.stderr.join('\n')).not.toContain(operand);
+    expect(result.stderr.join('\n')).toContain('未知命令');
+  });
+
+  test.each(['--api-key', '--api-key=key-value-must-not-be-used'])('rejects %s before loading config, credentials, or runtime', async (flag) => {
+    let configCalls = 0;
+    let credentialCalls = 0;
+    let runtimeCalls = 0;
+    const argv = flag === '--api-key' ? ['run', 'task', flag, 'key-value-must-not-be-used'] : ['run', 'task', flag];
+    const result = invoke(argv, {
+      loadConfig: () => {
+        configCalls += 1;
+        throw new Error('not reached');
+      },
+      credentials: {
+        status: async () => {
+          credentialCalls += 1;
+          return { exists: true };
+        },
+        set: async () => undefined,
+        clear: async () => undefined,
+      },
+      runtime: {
+        run: async () => {
+          runtimeCalls += 1;
+          return session();
+        },
+        resume: async () => session(),
+        approve: async () => session(),
+        reject: async () => session(),
+        demo: async () => session(),
+      },
+    });
+
+    await expect(result.code).resolves.toBe(EXIT.USAGE);
+    expect(configCalls).toBe(0);
+    expect(credentialCalls).toBe(0);
+    expect(runtimeCalls).toBe(0);
+    expect([...result.stdout, ...result.stderr].join('\n')).not.toContain('key-value-must-not-be-used');
+  });
+
   test('redacts injected config-loader failures before writing stderr', async () => {
     const secret = 'super-secret-value';
     const result = invoke(['config', 'check'], {
@@ -257,6 +304,28 @@ describe('CLI session commands and offline demo', () => {
       ? ['resume:session-r']
       : [`${method}:${argv[1]}:${argv[2]}`]);
     expect(result.stderr).toEqual([]);
+  });
+
+  test('deny is a reject alias and forwards the exact session and hash to the runtime', async () => {
+    const cwd = await workspace();
+    await writeConfig(cwd);
+    const calls: string[] = [];
+    const result = invoke(['deny', 'session-deny', 'sha256:expected'], {
+      cwd,
+      runtime: {
+        run: async () => session(),
+        resume: async () => session(),
+        approve: async () => session(),
+        reject: async ({ sessionId, actionHash }) => {
+          calls.push(`${sessionId}:${actionHash}`);
+          return session(sessionId);
+        },
+        demo: async () => session(),
+      },
+    });
+
+    await expect(result.code).resolves.toBe(EXIT.OK);
+    expect(calls).toEqual(['session-deny:sha256:expected']);
   });
 
   test('demo uses the built-in scripted mock without calling fetch', async () => {
