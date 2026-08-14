@@ -68,3 +68,60 @@ describe('CLI config/check and error boundary', () => {
     expect(result.stderr.join('\n')).toContain('[REDACTED]');
   });
 });
+
+describe('CLI credentials commands', () => {
+  test('credentials status reports existence only and never a stored value', async () => {
+    const storedValue = 'credential-value-must-not-be-printed';
+    const result = invoke(['credentials', 'status'], {
+      credentials: {
+        status: async () => ({ exists: true }),
+        set: async () => undefined,
+        clear: async () => undefined,
+      },
+    });
+
+    await expect(result.code).resolves.toBe(EXIT.OK);
+    expect(result.stdout).toEqual(['凭据状态：已配置。']);
+    expect(result.stdout.join('\n')).not.toContain(storedValue);
+    expect(result.stderr).toEqual([]);
+  });
+
+  test('credentials set obtains a hidden value through injection and never echoes it', async () => {
+    const enteredValue = 'input-value-must-not-be-printed';
+    const received: string[] = [];
+    const result = invoke(['credentials', 'set'], {
+      readHidden: async () => enteredValue,
+      credentials: {
+        status: async () => ({ exists: false }),
+        set: async (value) => received.push(value ?? ''),
+        clear: async () => undefined,
+      },
+    });
+
+    await expect(result.code).resolves.toBe(EXIT.OK);
+    expect(received).toEqual([enteredValue]);
+    expect(result.stdout).toEqual(['凭据已保存到系统安全存储。']);
+    expect([...result.stdout, ...result.stderr].join('\n')).not.toContain(enteredValue);
+  });
+
+  test('credentials clear delegates once and keeps subprocess-style failure text redacted', async () => {
+    const storedValue = 'clear-error-value-must-not-be-printed';
+    let clears = 0;
+    const result = invoke(['credentials', 'clear'], {
+      credentials: {
+        status: async () => ({ exists: false }),
+        set: async () => undefined,
+        clear: async () => {
+          clears += 1;
+          throw new Error(`Authorization: Bearer ${storedValue}`);
+        },
+      },
+    });
+
+    await expect(result.code).resolves.toBe(EXIT.FAILURE);
+    expect(clears).toBe(1);
+    expect(result.stdout).toEqual([]);
+    expect(result.stderr.join('\n')).not.toContain(storedValue);
+    expect(result.stderr.join('\n')).toContain('[REDACTED]');
+  });
+});
