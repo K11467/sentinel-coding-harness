@@ -71,6 +71,19 @@ describe('CommandTools', () => {
     expect(calls).toBe(0);
   });
 
+  test('拒绝空字符串 arg，且不 spawn', async () => {
+    let calls = 0;
+    const neverSpawn: SpawnProcess = () => {
+      calls += 1;
+      throw new Error('不应 spawn');
+    };
+
+    const result = await tools({ spawnProcess: neverSpawn }).runCommand(node, ['']);
+
+    expect(result).toMatchObject({ ok: false, errorCode: 'invalid_arguments' });
+    expect(calls).toBe(0);
+  });
+
   test.each([
     ['NUL', ['safe\u0000arg']],
     ['换行', ['safe\narg']],
