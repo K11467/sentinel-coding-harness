@@ -1,0 +1,18 @@
+# Sentinel Harness 的保守本地配置示例。testCommand 只能在此处指定，模型无法覆盖它。
+workspaceRoot: .
+model: gpt-5.4-mini
+maxSteps: 6
+maxCostCny: 70
+testCommand:
+  command: npm
+  args: [test]
+allowedCommands:
+  - command: npm
+    argsPrefix: [test]
+policyRules:
+  - id: approval-network
+    effect: require_approval
+    risk: high
+    match:
+      types: [run_command]
+      commands: [curl]
