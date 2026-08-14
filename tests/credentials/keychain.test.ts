@@ -13,6 +13,7 @@ import {
   type SecurityProcessResult,
   type SecurityProcessRunner,
 } from '../../src/credentials/keychain.js';
+import { cleanupTemporaryKeychainSmoke } from '../../src/credentials/keychain-smoke-cleanup.js';
 
 const keychainSmokeEnabled = process.platform === 'darwin' && process.env.SENTINEL_KEYCHAIN_SMOKE === '1';
 
@@ -38,6 +39,28 @@ function macosKeychain(runner = new FakeProcessRunner()): MacOSKeychain {
 }
 
 describe('MacOSKeychain', () => {
+  test('临时 Keychain 清理即使前序失败仍尝试恢复、删除与移除目录', async () => {
+    const calls: string[] = [];
+
+    await expect(
+      cleanupTemporaryKeychainSmoke({
+        restoreDefault: async () => {
+          calls.push('restore');
+          throw new Error('restore failed');
+        },
+        deleteKeychain: async () => {
+          calls.push('delete-keychain');
+          throw new Error('delete failed');
+        },
+        removeDirectory: async () => {
+          calls.push('remove-directory');
+          throw new Error('remove failed');
+        },
+      }),
+    ).rejects.toMatchObject({ failedSteps: ['restore-default', 'delete-keychain', 'remove-directory'] });
+    expect(calls).toEqual(['restore', 'delete-keychain', 'remove-directory']);
+  });
+
   test('set 仅经受控 stdin 传递内存 secret，命令参数中没有 key', async () => {
     const secret = 'test-secret-never-in-args';
     const runner = new FakeProcessRunner();
@@ -178,17 +201,30 @@ describe('MacOSKeychain', () => {
       await expect(keychain.clear()).resolves.toBeUndefined();
       await expect(keychain.status()).resolves.toEqual({ exists: false });
     } finally {
-      if (temporaryDefaultSelected && previousDefault) {
-        expect(
-          (await nodeSecurityProcessRunner.spawn(SECURITY_EXECUTABLE, ['default-keychain', '-s', previousDefault], { shell: false })).exitCode,
-        ).toBe(0);
-      }
-      if (temporaryKeychainCreated) {
-        expect(
-          (await nodeSecurityProcessRunner.spawn(SECURITY_EXECUTABLE, ['delete-keychain', temporaryKeychain], { shell: false })).exitCode,
-        ).toBe(0);
-      }
-      await rm(temporaryDirectory, { recursive: true, force: true });
+      const defaultToRestore = previousDefault;
+      await cleanupTemporaryKeychainSmoke({
+        restoreDefault: temporaryDefaultSelected && defaultToRestore
+          ? async () => {
+              const result = await nodeSecurityProcessRunner.spawn(
+                SECURITY_EXECUTABLE,
+                ['default-keychain', '-s', defaultToRestore],
+                { shell: false },
+              );
+              if (result.exitCode !== 0) throw new Error('restore failed');
+            }
+          : undefined,
+        deleteKeychain: temporaryKeychainCreated
+          ? async () => {
+              const result = await nodeSecurityProcessRunner.spawn(
+                SECURITY_EXECUTABLE,
+                ['delete-keychain', temporaryKeychain],
+                { shell: false },
+              );
+              if (result.exitCode !== 0) throw new Error('delete failed');
+            }
+          : undefined,
+        removeDirectory: () => rm(temporaryDirectory, { recursive: true, force: true }),
+      });
     }
   });
 });
