@@ -38,7 +38,7 @@ describe('ActionParser', () => {
     [{ type: 'run_command', reason: '运行命令', command: 'npm' }, 'run_command 缺 args'],
     [{ type: 'remember', reason: '保存笔记' }, 'remember 缺 note'],
     [{ type: 'finish', reason: '结束任务' }, 'finish 缺 summary']
-  ])('拒绝各 action type 的必填字段：%s', (input) => {
+  ])('拒绝各 action type 的必填字段：%s', (input, _description) => {
     expectInvalid(input, 'schema_invalid');
   });
 
