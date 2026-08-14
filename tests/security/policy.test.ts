@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ActionParser, type Action } from '../../src/domain/actions.js';
+import { ActionParser, type Action, type ActionEnvelope } from '../../src/domain/actions.js';
 import type { HarnessConfig } from '../../src/domain/config.js';
 import { PolicyEngine } from '../../src/security/policy.js';
 
@@ -17,12 +17,16 @@ function config(overrides: Partial<HarnessConfig> = {}): HarnessConfig {
   };
 }
 
-function action(input: Omit<Action, 'id'>): Action {
+function action(input: ActionEnvelope): Action {
   const parsed = new ActionParser(() => 'action-1').parse(input);
   if (!parsed.ok) {
     throw new Error(parsed.error.message);
   }
   return parsed.action;
+}
+
+function unsafeAction(input: ActionEnvelope): Action {
+  return { ...input, id: 'unsafe-action' } as Action;
 }
 
 describe('PolicyEngine', () => {
@@ -40,9 +44,9 @@ describe('PolicyEngine', () => {
   });
 
   it.each([
-    action({ type: 'read_file', reason: 'inspect source', path: '../private.txt' }),
-    action({ type: 'write_file', reason: 'write outside', path: '/tmp/outside.ts', content: 'export {};' }),
-    action({ type: 'list_files', reason: 'windows path', path: 'C:\\outside' })
+    unsafeAction({ type: 'read_file', reason: 'inspect source', path: '../private.txt' }),
+    unsafeAction({ type: 'write_file', reason: 'write outside', path: '/tmp/outside.ts', content: 'export {};' }),
+    unsafeAction({ type: 'list_files', reason: 'windows path', path: 'C:\\outside' })
   ])('denies paths outside the workspace', (outside) => {
     const decision = new PolicyEngine(config()).decide(outside);
 
