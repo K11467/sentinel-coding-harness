@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
@@ -164,9 +164,9 @@ describe('CommandTools', () => {
   });
 
   test('runTests 不接受模型命令，只执行注入的受信 testCommand', async () => {
-    const calls: Array<{ command: string; args: readonly string[]; shell: boolean }> = [];
+    const calls: Array<{ command: string; args: readonly string[]; shell: boolean; cwd: string; detached: boolean }> = [];
     const spawnProcess: SpawnProcess = (command, args, options) => {
-      calls.push({ command, args, shell: options.shell });
+      calls.push({ command, args, shell: options.shell, cwd: options.cwd, detached: options.detached });
       return spawn(command, [...args], options);
     };
     const testScript = await script('process.stdout.write("injected test")');
@@ -180,7 +180,13 @@ describe('CommandTools', () => {
     const result = await commandTools.runTests();
 
     expect(result).toMatchObject({ ok: true, kind: 'tests', output: 'injected test' });
-    expect(calls).toEqual([{ command: injected.command, args: injected.args, shell: false }]);
+    expect(calls).toEqual([{
+      command: injected.command,
+      args: injected.args,
+      shell: false,
+      cwd: process.cwd(),
+      detached: true
+    }]);
   });
 
   test('普通 args 中的空格合法且按单个参数传入', async () => {
@@ -192,7 +198,7 @@ describe('CommandTools', () => {
   });
 
   test('runCommand 和 runTests 均在已验证的 workspaceRoot 中启动', async () => {
-    const workspaceRoot = await mkdtemp(join(tmpdir(), 'sentinel-command-workspace-'));
+    const workspaceRoot = await realpath(await mkdtemp(join(tmpdir(), 'sentinel-command-workspace-')));
     temporaryPaths.push(workspaceRoot);
     const commandScript = await script('process.stdout.write(process.cwd())');
     const commandTools = tools({

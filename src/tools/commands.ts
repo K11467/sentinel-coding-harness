@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn } from 'node:child_process';
+import { isAbsolute } from 'node:path';
 import type { CommandRule } from '../domain/config.js';
 
 /** The maximum combined stdout/stderr retained for a command result. */
@@ -15,7 +16,7 @@ export interface TrustedCommand {
 export type SpawnProcess = (
   command: string,
   args: readonly string[],
-  options: { shell: false }
+  options: { shell: false; cwd: string; detached: true }
 ) => ChildProcess;
 
 export type CommandToolErrorCode =
@@ -48,6 +49,8 @@ export type CommandResult = CommandSuccess | CommandFailure;
 
 export interface CommandToolsOptions {
   allowedCommands: readonly CommandRule[];
+  /** An absolute, already-canonicalized workspace path supplied by the workspace fence. */
+  workspaceRoot: string;
   /** A configuration-owned command: no model action can override it. */
   testCommand: TrustedCommand;
   timeoutMs?: number;
@@ -55,7 +58,11 @@ export interface CommandToolsOptions {
   spawnProcess?: SpawnProcess;
 }
 
-function nodeSpawn(command: string, args: readonly string[], options: { shell: false }): ChildProcess {
+function nodeSpawn(
+  command: string,
+  args: readonly string[],
+  options: { shell: false; cwd: string; detached: true }
+): ChildProcess {
   return spawn(command, [...args], options);
 }
 
@@ -110,6 +117,9 @@ export class CommandTools {
   private readonly spawnProcess: SpawnProcess;
 
   constructor(private readonly options: CommandToolsOptions) {
+    if (!isAbsolute(options.workspaceRoot)) {
+      throw new Error('workspaceRoot 必须是已验证的绝对路径。');
+    }
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.spawnProcess = options.spawnProcess ?? nodeSpawn;
   }
@@ -118,7 +128,7 @@ export class CommandTools {
     if (!isSafeCommand(command)) {
       return Promise.resolve(invalid('command', 'invalid_command'));
     }
-    if (!isStringArray(args)) {
+    if (!isSafeArgs(args)) {
       return Promise.resolve(invalid('command', 'invalid_arguments'));
     }
     if (!matchesCommandRule(command, args, this.options.allowedCommands)) {
@@ -140,7 +150,7 @@ export class CommandTools {
     if (!isSafeCommand(command)) {
       return Promise.resolve(invalid('tests', 'invalid_command'));
     }
-    if (!isStringArray(args)) {
+    if (!isSafeArgs(args)) {
       return Promise.resolve(invalid('tests', 'invalid_arguments'));
     }
     return this.execute('tests', command, args);
@@ -152,7 +162,11 @@ export class CommandTools {
     return new Promise((resolve) => {
       let child: ChildProcess;
       try {
-        child = this.spawnProcess(command, args, { shell: false });
+        child = this.spawnProcess(command, args, {
+          shell: false,
+          cwd: this.options.workspaceRoot,
+          detached: true
+        });
       } catch {
         const captured = output.result();
         resolve({
@@ -168,12 +182,9 @@ export class CommandTools {
       let settled = false;
       let timedOut = false;
       const timeout = setTimeout(() => {
+        if (settled) return;
         timedOut = true;
-        try {
-          child.kill('SIGKILL');
-        } catch {
-          // A concurrently exited child has already produced its structured result.
-        }
+        killProcessGroup(child);
       }, this.timeoutMs);
 
       const finish = (result: CommandResult) => {
@@ -241,6 +252,32 @@ function isSafeCommand(command: unknown): command is string {
     && !/\s/.test(command);
 }
 
-function isStringArray(args: unknown): args is string[] {
-  return Array.isArray(args) && args.every((arg) => typeof arg === 'string');
+function isSafeArgs(args: unknown): args is string[] {
+  return Array.isArray(args)
+    && args.every((arg) => typeof arg === 'string' && !forbiddenCommandCharacters.test(arg));
+}
+
+function killProcessGroup(child: ChildProcess): void {
+  if (child.pid === undefined) return;
+
+  if (process.platform === 'win32') {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      // The process may have exited between the timeout and this signal.
+    }
+    return;
+  }
+
+  try {
+    process.kill(-child.pid, 'SIGKILL');
+  } catch (error) {
+    if (!isEsrch(error)) {
+      // close/error handlers still provide a bounded, structured result.
+    }
+  }
+}
+
+function isEsrch(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ESRCH';
 }
