@@ -23,14 +23,14 @@
 - [x] 在 GitHub 主仓库推送最终提交，并创建 tag 与 GitHub Release。
 - [x] Release 附上 npm tarball、SHA-256、版本号、Node/macOS 前提和简短变更说明。
 - [x] 将 Release 链接填入提交信息中要求的位置（课程允许 CLI-only 项目使用 GitHub Release 链接）。
-- [ ] 生成源码压缩包，解压到临时目录复查：包含源码、测试、文档、CI 配置和许可证；不包含密钥、`node_modules` 或本地运行数据。
+- [x] 生成源码压缩包，解压到临时目录复查：包含源码、测试、文档、CI 配置和许可证；不包含密钥、`node_modules` 或本地运行数据。
 - [ ] 将源码压缩包上传到 selearning。
 
 ## `submission.jsonc`（必须与源码压缩包并列）
 
 - [x] 使用老师提供的模板文件，文件名必须保持为 **`submission.jsonc`**。
 - [x] 按真实信息填写姓名“孔泽慧”、学号“231880365”、仓库链接、Release/部署链接及其他必填项。
-- [ ] **不要**把 `submission.jsonc` 改名，也**不要**放进源码压缩包内部。
+- [x] **不要**把 `submission.jsonc` 改名，也**不要**放进源码压缩包内部。
 - [ ] 将它与源码压缩包作为两个并列文件上传到 selearning。
 
 ## 最后一分钟安全复核
