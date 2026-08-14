@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
@@ -115,4 +115,32 @@ describe('WorkspaceTools', () => {
       errorCode: 'file_too_large'
     });
   });
+
+  test.each(['list', 'read', 'write'] as const)(
+    '验证后父目录被替换为工作区外链接时，%s 不会触及外部目标',
+    async (operation) => {
+      const { root, outside } = await createWorkspace();
+      const safeDirectory = join(root, 'safe');
+      const movedDirectory = join(root, 'safe-before-race');
+      const externalTarget = join(outside, 'target.txt');
+      await mkdir(safeDirectory);
+      await writeFile(join(safeDirectory, 'target.txt'), 'inside', 'utf8');
+      await writeFile(externalTarget, 'outside', 'utf8');
+      const tools = new WorkspaceTools(root, {
+        beforeWorkerStartForTesting: async () => {
+          await rename(safeDirectory, movedDirectory);
+          await symlink(outside, safeDirectory);
+        }
+      });
+
+      const result = operation === 'list'
+        ? await tools.list('safe')
+        : operation === 'read'
+          ? await tools.read('safe/target.txt')
+          : await tools.write('safe/target.txt', 'must-not-reach-outside');
+
+      expect(result).toMatchObject({ ok: false, errorCode: 'workspace_changed' });
+      await expect(readFile(externalTarget, 'utf8')).resolves.toBe('outside');
+    }
+  );
 });
