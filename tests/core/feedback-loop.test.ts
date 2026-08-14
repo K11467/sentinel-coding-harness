@@ -114,7 +114,7 @@ describe('AgentLoop governance and feedback integration', () => {
   });
 
   test('ToolDispatcher only feeds whitelisted summarized feedback into AgentContext', async () => {
-    const authorization = 'Bearer authorization-secret-value';
+    const authorization = ['Bearer', 'authorization-secret-value'].join(' ');
     const apiKey = 'api_key=api-key-secret-value';
     const cookie = 'Cookie: session=cookie-secret-value';
     const dispatcher = new ToolDispatcher({
