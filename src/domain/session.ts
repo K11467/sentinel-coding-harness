@@ -58,6 +58,15 @@ export const pendingActionSchema = z.object({
   actionHash: nonEmptyStringSchema
 }).strict();
 
+const terminalSessionStatuses = new Set<SessionStatus>([
+  'completed',
+  'stopped',
+  'blocked',
+  'failed',
+  'budget_exhausted',
+  'cancelled'
+]);
+
 export const sessionStateSchema = z.object({
   id: nonEmptyStringSchema,
   status: sessionStatusSchema,
@@ -67,7 +76,47 @@ export const sessionStateSchema = z.object({
   recentActions: z.array(actionSummarySchema).max(8),
   recentFeedback: z.array(feedbackSummarySchema).max(8),
   pendingAction: pendingActionSchema.optional()
-}).strict();
+}).strict().superRefine((session, context) => {
+  if (terminalSessionStatuses.has(session.status)) {
+    if (session.stopReason === undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['stopReason'],
+        message: '终态 session 必须包含 stopReason。'
+      });
+    }
+    if (session.pendingAction !== undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['pendingAction'],
+        message: '终态 session 不得包含 pendingAction。'
+      });
+    }
+    return;
+  }
+
+  if (session.stopReason !== undefined) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['stopReason'],
+      message: '非终态 session 不得包含 stopReason。'
+    });
+  }
+  if (session.status === 'waiting_approval' && session.pendingAction === undefined) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['pendingAction'],
+      message: 'waiting_approval session 必须包含 pendingAction。'
+    });
+  }
+  if (session.status !== 'waiting_approval' && session.pendingAction !== undefined) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['pendingAction'],
+      message: '只有 waiting_approval session 可以包含 pendingAction。'
+    });
+  }
+});
 
 export type SessionStatus = z.infer<typeof sessionStatusSchema>;
 export type StopReason = z.infer<typeof stopReasonSchema>;

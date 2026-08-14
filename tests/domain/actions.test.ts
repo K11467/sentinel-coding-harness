@@ -137,7 +137,7 @@ describe('SessionState', () => {
 
   test('接受规范 status、完整 pending action 和限定 stopReason', () => {
     expect(sessionStateSchema.parse(base)).toMatchObject(base);
-    expect(sessionStateSchema.parse({ ...base, status: 'stopped', stopReason: 'max_steps' })).toMatchObject({
+    expect(sessionStateSchema.parse({ ...base, status: 'stopped', stopReason: 'max_steps', pendingAction: undefined })).toMatchObject({
       status: 'stopped',
       stopReason: 'max_steps'
     });
