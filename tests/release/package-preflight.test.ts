@@ -18,6 +18,7 @@ const fixtureDirectories = ['.sentinel', 'data'];
 const createdFixtureDirectories: string[] = [];
 const prepackFailureFile = 'tests/t17-prepack-failure.test.ts';
 const testIfPackPrecheckIsNotAlreadyRunning = process.env.SENTINEL_T17_PREPACK_ASSERT === '1' ? test.skip : test;
+const packageCommandTimeoutMs = 30_000;
 
 afterEach(async () => {
   await Promise.all(fixtureFiles.map((file) => rm(join(repositoryRoot, file), { force: true })));
@@ -51,7 +52,7 @@ describe('release package preflight', () => {
     expect(report.files).not.toContain('tests/release/package-preflight.test.ts');
     expect(report.files.some((path) => isForbidden(path))).toBe(false);
     expect(report.files.every((path) => isReleaseFile(path))).toBe(true);
-  });
+  }, packageCommandTimeoutMs);
 
   testIfPackPrecheckIsNotAlreadyRunning('runs offline check before build when npm pack invokes prepack', async () => {
     await writeFile(join(repositoryRoot, prepackFailureFile), [
@@ -73,7 +74,7 @@ describe('release package preflight', () => {
     expect(commandOutput(packFailure)).toContain('T17_PREPACK_CHECK_FAILURE');
     const packageJson = JSON.parse(await readFile(join(repositoryRoot, 'package.json'), 'utf8')) as { scripts: { prepack: string } };
     expect(packageJson.scripts.prepack).toBe('npm_config_offline=true npm run check && npm_config_offline=true npm run build');
-  });
+  }, packageCommandTimeoutMs);
 });
 
 async function ensureFixtureDirectory(directory: string): Promise<void> {
