@@ -50,7 +50,7 @@ npm run build
 
 `npm test` 与 `npm run check` 均使用脚本化 mock，不读取 API Key，也不请求 Provider，可作为离线检查。`npm run demo` 会离线运行三个确定性机制场景：危险动作在分发前被拦截、失败反馈导致下一步改选、审批只能消费一次。操作说明见 [DEMO_GUIDE.md](DEMO_GUIDE.md)。
 
-发布版会以 GitHub Release 附件中的 npm tarball 提供。Release 建立后，可使用 Release 页面给出的 `.tgz` 文件安装；请同时核对发布的 SHA-256 与 Node/macOS 前提。
+发布版可从 [v0.1.0 GitHub Release](https://github.com/K11467/sentinel-coding-harness/releases/tag/v0.1.0) 下载 npm tarball；请同时下载并核对 `SHA256SUMS.txt`、Node/macOS 前提后再安装。
 
 ## CLI 概览
 

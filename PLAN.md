@@ -271,5 +271,5 @@ Worktree：`feature/cli-provider`（T12–T15）。
 | T14 | 已完成（含最终审查修复） | Terra 子 agent；Sol 只读复核 | `8b700ac`、`006d04c`、`438d154`、`8a4dce0` | `2e34a67`、`f1c7248`、`a88d0e7`、`a728111`、`7afc7ad` | 默认安全 runtime、HITL inspect/approve、脱敏 audit、状态迁移与故障收敛；以 `d8e4508` 合入 |
 | T15 | 已完成 | Terra 子 agent；Sol 只读复核 | `afc8aca` | `2527341` | 三机制离线场景与 stable report；以 `a54ead4` 合入 |
 | T16 | 已完成 | 主 agent | `6852166` | `052d241` | GitHub/GitLab 离线 CI、`npm run check`；测试不读取 Key 或 Provider |
-| T17 | 已完成（待最终 Release 实操） | Terra 子 agent；Sol 只读复核 | `e3323b2`、`895c3ef`、`8329c59` | `9b27750`、`23557aa` | npm pack 白名单与 prepack 离线 check+build；以 `de9a151` 合入 |
-| T18 | 进行中 | 主 agent | - | - | 最终文档同步、全量验证、Release、源码包与同级 submission.jsonc |
+| T17 | 已完成（Release 已创建） | Terra 子 agent；Sol 只读复核 | `e3323b2`、`895c3ef`、`8329c59` | `9b27750`、`23557aa` | `v0.1.0` Release 已附 tarball 与 SHA-256；打包后离线安装 demo 通过 |
+| T18 | 进行中：交付物待作者反思与平台上传 | 主 agent | 不适用：交付检查 | 本提交待生成 | 285 通过 / 1 opt-in Keychain smoke 跳过；build、demo、release preflight、npm pack、包安装 smoke 和 Release 均完成；`REFLECTION.md` 与 selearning 上传必须由项目作者完成 |
