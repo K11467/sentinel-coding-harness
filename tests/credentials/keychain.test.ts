@@ -148,6 +148,7 @@ describe('MacOSKeychain', () => {
     };
     const secret = `sentinel-smoke-secret-${randomUUID()}`;
     let previousDefault: string | undefined;
+    let temporaryKeychainCreated = false;
     let temporaryDefaultSelected = false;
 
     try {
@@ -162,6 +163,7 @@ describe('MacOSKeychain', () => {
       expect(
         (await nodeSecurityProcessRunner.spawn(SECURITY_EXECUTABLE, ['create-keychain', temporaryKeychain], { shell: false })).exitCode,
       ).toBe(0);
+      temporaryKeychainCreated = true;
       expect(
         (await nodeSecurityProcessRunner.spawn(SECURITY_EXECUTABLE, ['default-keychain', '-s', temporaryKeychain], { shell: false })).exitCode,
       ).toBe(0);
@@ -175,9 +177,15 @@ describe('MacOSKeychain', () => {
       await expect(keychain.status()).resolves.toEqual({ exists: false });
     } finally {
       if (temporaryDefaultSelected && previousDefault) {
-        await nodeSecurityProcessRunner.spawn(SECURITY_EXECUTABLE, ['default-keychain', '-s', previousDefault], { shell: false });
+        expect(
+          (await nodeSecurityProcessRunner.spawn(SECURITY_EXECUTABLE, ['default-keychain', '-s', previousDefault], { shell: false })).exitCode,
+        ).toBe(0);
       }
-      await nodeSecurityProcessRunner.spawn(SECURITY_EXECUTABLE, ['delete-keychain', temporaryKeychain], { shell: false });
+      if (temporaryKeychainCreated) {
+        expect(
+          (await nodeSecurityProcessRunner.spawn(SECURITY_EXECUTABLE, ['delete-keychain', temporaryKeychain], { shell: false })).exitCode,
+        ).toBe(0);
+      }
       await rm(temporaryDirectory, { recursive: true, force: true });
     }
   });
