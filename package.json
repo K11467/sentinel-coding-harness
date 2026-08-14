@@ -2,6 +2,16 @@
   "name": "sentinel-coding-harness",
   "version": "0.1.0",
   "private": true,
+  "files": [
+    "dist",
+    "examples",
+    "README.md",
+    "LICENSE",
+    "DEMO_GUIDE.md",
+    "REFERENCES.md",
+    "SPEC.md",
+    "THREAT_MODEL.md"
+  ],
   "bin": {
     "sentinel": "dist/cli.js"
   },
@@ -13,7 +23,9 @@
     "demo": "npm run build && node dist/cli.js demo",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm test"
+    "check": "npm run typecheck && npm test",
+    "prepack": "npm_config_offline=true npm run check && npm_config_offline=true npm run build",
+    "release:preflight": "npm_config_offline=true npm run check && node scripts/release-preflight.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
