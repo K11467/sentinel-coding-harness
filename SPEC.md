@@ -83,17 +83,57 @@ Sentinel 是一个本地运行的命令行 Coding Agent Harness。它把单次 L
 ### 5.1 Action 协议与 LLM 适配
 
 **输入：** `AgentContext`（任务、工作区、可用工具、相关记忆、最近反馈）与预算。
-**行为：** `LLMClient.decide()` 返回一个平坦、严格校验的 JSON envelope：`type`、`reason`、`path`、`content`、`command`、`args`、`note`、`summary`；不用字段填空字符串或空数组。`ActionParser` 先做 Zod 结构校验，再做按 action type 的语义校验。
+**行为：** `LLMClient.decide()` 返回一个平坦、严格校验的 JSON envelope。所有 action 必有非空 `type` 和 `reason`；不适用的 payload 字段必须从 JSON 中省略，不能以 `null`、`undefined` 或占位空值代替。`ActionParser` 先做 Zod 结构校验，再做按 action type 的语义校验。
 **输出：** 判定为有效的 discriminated `Action`，或带可读错误的 `InvalidAction`。
 **边界/错误：** provider 不能稳定支持 strict JSON Schema 时，适配器仅接受完整 JSON 文本并仍经同一 Zod/语义校验；无效 action 只能得到一次格式修复提示，第二次失败即安全停止。
 
 生产适配器使用 `POST https://api.zhizengzeng.com/v1/responses`，默认模型 `gpt-5.4-mini`。它优先请求 Responses 的 strict JSON Schema 格式，并且即使 provider 已声明结构化输出，也一定在本地再次验证；该接口形态与 OpenAI 的 Responses 规范一致。[智增增 Responses 文档](https://doc.zhizengzeng.com/doc-7762827) [OpenAI Responses API 参考](https://platform.openai.com/docs/api-reference/responses)
 
+#### 5.1.1 规范性 Action Contract
+
+`ActionEnvelope` 是 LLM 的唯一允许输出。它没有 `id`；仅当 envelope 通过结构和语义验证后，parser 才通过可注入的 `ActionIdFactory` 生成 UUID 并构造内部 `Action`。`ActionEnvelope` 和所有嵌套对象均拒绝未知字段。
+
+| `type` | 除 `type`/`reason` 外的必需字段 | 可选字段 | 语义 |
+| --- | --- | --- | --- |
+| `list_files` | 无 | `path` | 未给 `path` 时列出工作区根；给出时必须是相对目录路径 |
+| `read_file` | `path` | 无 | `path` 为非空相对文件路径 |
+| `write_file` | `path`、`content` | 无 | `path` 为非空相对文件路径；`content` 必须是字符串，允许空字符串以创建/清空空文件 |
+| `run_command` | `command`、`args` | 无 | `command` 是单个可执行文件 token；`args` 必须存在但允许为空数组 |
+| `run_tests` | 无 | 无 | 测试命令只来自配置的 `testCommand`，模型不可指定 command/args |
+| `remember` | `note` | 无 | `note` 为 1–300 字符的非空文本，保存为 session scope note |
+| `finish` | `summary` | 无 | `summary` 为 1–1,000 字符的非空任务完成说明 |
+
+`reason` 对所有 type 都必需，长度为 1–500 字符。除 `write_file.content` 和允许为空的 `run_command.args` 外，任何出现的字符串字段都不得为空。`InvalidAction` 是 parser 的显式失败结果，而非抛给工具层的原始异常：
+
+```text
+{ ok: false, error: { code: "invalid_json" | "schema_invalid" | "semantic_invalid", message, issues } }
+```
+
+有效结果为 `{ ok: true, action }`。`issues` 是不含模型原始长文本的、可审计的校验问题数组。
+
+#### 5.1.2 `run_command` 的无 Shell 规则
+
+`run_command` 只允许 `spawn(command, args, { shell: false })`。`command` 必须匹配 `^[A-Za-z0-9._/-]+$`，且不能含空白；`"npm test"` 必须拆为 `command: "npm"`、`args: ["test"]`。`args` 必须为字符串数组，可为空，但任何 `command` 或 arg 出现换行、NUL、分号、管道、与号、重定向符、反引号、美元符或圆括号，都在 parser 阶段以 `semantic_invalid` 拒绝。这个语法检查不取代策略引擎：即使格式合法，规则仍可要求审批或拒绝。
+
+#### 5.1.3 `HarnessConfig` 与 `SessionState` Contract
+
+配置加载器将 `workspaceRoot` 解析为绝对真实路径；`harness.yaml` 未提供该字段时使用启动 CLI 的 `process.cwd()`，但解析后的内部配置中不允许 `"."`。`maxSteps` 默认 6，合法范围为 1–12；`maxCostCny` 默认 70，合法范围为 1–70。所有对象层级均为 strict，未知字段一律报错。
+
+`allowedCommands` 是 `CommandRule[]`，每项为 `{ command: string, argsPrefix: string[] }`；仅当 action 的 command 完全相等且 args 以某条 `argsPrefix` 开头时命中。`policyRules` 是 `PolicyRule[]`，每项为：
+
+```text
+{ id, effect: "allow" | "require_approval" | "deny",
+  risk: "low" | "medium" | "high" | "critical",
+  match: { types?: ActionType[], pathPrefixes?: string[], commands?: string[] } }
+```
+
+`SessionState.status` 为 `created`、`running`、`waiting_approval`、`completed`、`stopped`、`blocked`、`failed`、`budget_exhausted` 或 `cancelled`。受控停止的 `stopReason` 是 `finished`、`max_steps`、`repeated_action`、`invalid_action`、`approval_denied`、`user_cancelled`、`budget_exhausted`、`provider_error`、`tool_error` 或 `policy_denied`。`recentActions` 最多保留 8 条脱敏 `ActionSummary`，而非完整 content；`recentFeedback` 最多保留 8 个 `{ category, summary, actionId, createdAt }`；`pendingAction` 保存完整、已验证且带 parser ID 的内部 `Action`，并与 action hash 一起持久化。
+
 ### 5.2 Agent 主循环
 
 **输入：** 已加载配置、任务文本、会话状态和 `LLMClient`。
 **行为：** 依次构造上下文、请求 action、调用 `Guardrail`、执行/暂停、记录工具结果并追加反馈，直到终态。
-**输出：** `completed`、`waiting_approval`、`blocked`、`failed` 或 `budget_exhausted` 会话。
+**输出：** `running`、`waiting_approval`、`completed`、`stopped`、`blocked`、`failed`、`budget_exhausted` 或 `cancelled` 会话；每个终态均有规范化 `stopReason`。
 **边界/错误：** 默认最多 6 步、单一网络超时 30 秒、最多一次网络重试、API 预算达到 70 元对应的应用内部上限前停止。真实费用以 provider usage 字段/手工账单为准，无法从客户端完全强制保证。
 
 ### 5.3 工具分发
@@ -161,12 +201,12 @@ flowchart LR
 
 | 实体 | 关键字段与约束 |
 | --- | --- |
-| `HarnessConfig` | `workspaceRoot`、`model`、`maxSteps`、`maxCostCny`、白名单命令、策略规则；未知字段拒绝 |
-| `Action` | `id`、`type`、`reason`、按类型所需参数；由 schema 和语义验证后构造 |
+| `HarnessConfig` | 绝对 `workspaceRoot`、`model`、`maxSteps`（1–12）、`maxCostCny`（1–70）、`CommandRule[]`、`PolicyRule[]`；所有层级未知字段拒绝 |
+| `ActionEnvelope` / `Action` | envelope 无 `id` 且只含 type 所需字段；验证后才由 parser 生成内部 `id` 的 discriminated `Action` |
 | `ToolResult` | `actionId`、`ok`、`kind`、`exitCode?`、截断内容、`errorCode?` |
 | `PolicyDecision` | `effect`、`ruleId`、`risk`、`reason`、`actionHash` |
 | `ApprovalRecord` | `sessionId`、`actionHash`、`status`、`createdAt`、`resolvedAt?`；只可单向转移 |
-| `SessionState` | `id`、`status`、`step`、任务、最近 action/feedback、pending action、停止原因 |
+| `SessionState` | `id`、规范 status、`step`、任务、最多 8 条 action 摘要/feedback、完整已验证 pending action、限定 `stopReason` |
 | `MemoryNote` | `id`、`scope`、`text`、`keywords`、`createdAt`；最多 300 字符 |
 | `AuditEvent` | 时间、会话、事件类型、脱敏 action 摘要、策略/工具结果；不含 Key |
 

@@ -55,6 +55,14 @@
 
 它的价值在于先迫使项目收敛到一个能通过 mock 证明的核心机制，并明确“不做 UI”是范围控制而不是功能缺失。它的局限是默认流程会消耗大量对话回合；本项目时间有限，因此把每一轮收敛为可审查的明确决定，并将冷启动验证作为检查规约是否遗漏隐性假设的客观步骤。
 
-## 5. 冷启动验证记录（P02 后补充）
+## 5. 冷启动验证记录（P02）
 
-P02 将补充：异构 agent 类型与版本、无历史会话的启动方式、给出的仅有文件、其停下询问的位置、误读与产出差距、修订前后的关键 diff，以及人类对每项建议的处理。此节现在不宣称已完成。
+**验证对象与隔离方式。** 使用 Cursor Agent 的新会话，在独立目录中只提供 `SPEC.md` 和 `PLAN.md`，没有主开发聊天历史、AGENT_LOG、SPEC_PROCESS 或本仓库源码。
+
+**结果。** Cursor 没有凭猜测继续，而是在 T01 前暂停并提出七组具体问题：P03 尚未完成但 T01 依赖它；测试脚手架被排在 T16 导致 `npm test` 无法成立；action 未使用字段、空 content、各 action 必填字段、ID 与 InvalidAction 未定义；shell 字符判定不完整；config 规则结构与上限不完整；session status/feedback/pending action 不完整；T01 文件边界和测试过滤命令不明确。它还报告其独立目录中 `npm install` 因 `UNABLE_TO_GET_ISSUER_CERT_LOCALLY` 未完成，因此没有声称测试通过。本仓库工作树经检查未出现 Cursor 写入。
+
+**判断。** 这些不是 Cursor 的误读，而是 SPEC/PLAN 的真实缺陷：特别是 T16 与 T01 的依赖顺序相互矛盾，且“严格输出”没有写成足以实现的 contract。
+
+**修订。** SPEC 新增 §5.1.1–§5.1.3，明确 action 矩阵、parser ID、InvalidAction、无 shell 规则、config/session schema；PLAN 新增先行 T00，并把 T01 测试命令和依赖改为可执行形式。对于证书错误，采纳“允许配置可信 CA、禁止关闭 TLS 校验”的策略。
+
+**下一步。** 由人类复核此修订后，向同一 Cursor 新会话仅提供修订后的 SPEC/PLAN，让它重试 T00/T01；其第二次结果将作为 P03 的补充证据。实现代码仍未开始。

@@ -7,7 +7,8 @@
 ```mermaid
 flowchart LR
   D[规格与计划] --> V[异构冷启动验证]
-  V --> A[核心协议]
+  V --> S[测试脚手架 T00]
+  S --> A[核心协议]
   A --> B[主循环与工具]
   A --> C[治理与HITL]
   B --> D1[反馈闭环]
@@ -39,10 +40,11 @@ flowchart LR
 
 ### P02 — 异构 agent 冷启动
 
-- **目标：** 用 OpenCode、Gemini CLI 或 Claude Code 中的一个（与 Codex 不同），新会话且只给 `SPEC.md`+`PLAN.md`，要求实现 `T01` 或 `T07`。
+- **目标：** 用 Cursor Agent（与 Codex 不同），新会话且只给 `SPEC.md`+`PLAN.md`，要求实现 `T01`。
 - **文件：** `SPEC_PROCESS.md`、`AGENT_LOG.md`、冷启动输出的非敏感摘要。
 - **预期：** 收集其暂停问题、误读和生成物；依据真实反馈修改 SPEC/PLAN。
-- **验证：** 保存提示词、会话隔离证据、问题清单、修订前后关键 diff；运行该 agent 写出的测试或审阅其输出。
+- **实际初次结果：** Cursor 正确发现 P03 依赖未完成、测试脚手架被错误排在 T16、action/config/session 契约不完整，并在其独立目录的 `npm install` 遇到 `UNABLE_TO_GET_ISSUER_CERT_LOCALLY` 后停止；没有写入本仓库。
+- **验证：** 保存提示词、会话隔离证据、问题清单、修订前后关键 diff；P03 后让 Cursor 仅根据修订版 SPEC/PLAN 重试 T00/T01，运行其写出的测试或审阅其输出。
 - **依赖：** P01；必须在任何生产实现代码之前完成。
 
 ### P03 — 冷启动反馈修订与确认
@@ -57,14 +59,23 @@ flowchart LR
 
 Worktree：`feature/core-protocol`。P03 后执行，可由 2 个子 agent 顺序完成。
 
+### T00 — 建立 TypeScript 测试脚手架（约 3–5 分钟）
+
+- **目标：** 在任何 Harness 代码前建立可运行的 Node/TypeScript/Vitest 基线；此 task 只定义构建与测试入口，不实现 agent 机制。
+- **文件：** `package.json`、`package-lock.json`、`tsconfig.json`、`vitest.config.ts`、`src/index.ts`、`tests/smoke.test.ts`。
+- **红测：** 缺少 test/typecheck script 时 `npm test` 或 `npm run typecheck` 必须失败；加入 smoke test 后先观察测试框架可发现失败断言。
+- **绿实现：** 固定 Node 20+、`vitest run`、`tsc --noEmit` 和最小 smoke test；不引入真实 LLM 或凭据。
+- **验证：** `npm ci`、`npm test -- tests/smoke.test.ts`、`npm run typecheck`。若 registry 证书失败，只允许诊断代理/CA 并配置可信 CA；禁止 `strict-ssl=false`、跳过 TLS 或改用不可信 registry。
+- **依赖：** P03。
+
 ### T01 — 定义 action/config/会话 schema（约 3–5 分钟）
 
 - **目标：** 建立 Zod action envelope、语义验证器、配置默认值和核心类型。
 - **文件：** `src/domain/actions.ts`、`src/domain/config.ts`、`src/domain/session.ts`、`tests/domain/actions.test.ts`。
-- **红测：** 无效 enum、缺字段、unused 字段非空、`write_file` 无 path、`run_command` 有 shell 字符串均失败。
+- **红测：** 无效 enum、缺字段、unused 字段未省略/为 null、`write_file` 无 path、`run_command` 有 shell 控制字符均失败；空 `write_file.content` 与空 `run_command.args` 按 SPEC 被正确区分。
 - **绿实现：** schema 将有效 envelope 转为 discriminated `Action`；冻结配置默认值。
-- **验证：** `npm test -- actions`，`npm run typecheck`。
-- **依赖：** P03。
+- **验证：** `npm test -- tests/domain/actions.test.ts`，`npm run typecheck`。
+- **依赖：** P03、T00。
 
 ### T02 — 抽象 LLM 与脚本化 mock（约 3–5 分钟）
 
@@ -205,7 +216,7 @@ Worktree：`feature/cli-provider`（T12–T15）。
 ### T16 — 可重复测试、质量门禁和 CI（约 4–5 分钟）
 
 - **目标：** 一键 test/check、GitHub Actions、GitLab `unit-test` job。
-- **文件：** `package.json`、`tsconfig.json`、`vitest.config.ts`、`.github/workflows/ci.yml`、`.gitlab-ci.yml`。
+- **文件：** `.github/workflows/ci.yml`、`.gitlab-ci.yml`、`scripts/check-delivery.mjs`。
 - **红测：** CI 配置或 type/lint 失败时 `npm run check` 非零退出。
 - **绿实现：** 依赖锁定，CI 无秘密、无网络 LLM。
 - **验证：** `npm ci && npm run check`；推送后检查 CI。
@@ -236,5 +247,6 @@ Worktree：`feature/cli-provider`（T12–T15）。
 | Task | 状态 | 实际 subagent | 红测试 commit | 绿实现 commit | PR / 验证 |
 | --- | --- | --- | --- | --- | --- |
 | P01 | 已完成 | 主 agent（Codex） | 不适用：仅文档 | `227d3d4` | `git diff --check`；敏感串扫描通过 |
-| P02 | 待开始 | 异构 agent | - | - | - |
-| P03–T18 | 待开始 | - | - | - | - |
+| P02 | 已完成：发现规约缺陷 | Cursor Agent（独立目录） | 不适用 | 未合入代码 | 问题清单、无仓库写入、P03 修订待复测 |
+| P03 | 进行中 | 主 agent（Codex） | 不适用 | - | 修订 SPEC/PLAN 后等待用户复核 |
+| T00–T18 | 待开始 | - | - | - | - |
