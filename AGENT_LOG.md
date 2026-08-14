@@ -9,3 +9,4 @@
 | 2026-08-14 17:41 | P01 | 安全审查 | 用户曾在会话中粘贴 API Key；agent 未写入任何文件、日志或命令，要求立即轮换。 | 教训：后续仅通过 Keychain 隐藏输入配置轮换后的 Key。 |
 | 2026-08-14 17:41 | P01 | 仓库初始化 | 初始化 `main` 分支，并创建公开 GitHub 仓库 `K11467/sentinel-coding-harness`。尚未写任何实现代码或派发实现 subagent。 | 人类确认 GitHub；教训：先完成并复核 SPEC/PLAN 与异构冷启动验证。 |
 | 2026-08-14 17:41 | P01 | 文档基线提交 | 创建 `227d3d4`：`docs(P01): 建立 Harness 规约与实施计划`。随后发现 Markdown 行尾空格，作为独立样式修正处理，不改写历史。 | 教训：格式门禁应在提交前运行；计划表只回填真实 hash。 |
+| 2026-08-14 17:49 | P01 | GitHub 连通性修复 | SSH 在当前网络的 banner 阶段超时；已将本仓库 remote 切换为 HTTPS，并通过已登录的 GitHub CLI credential helper 推送。 | 教训：发布前应验证远程传输协议；不在终端或日志显示 Token。 |
