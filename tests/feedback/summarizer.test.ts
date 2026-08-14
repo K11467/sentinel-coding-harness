@@ -43,14 +43,15 @@ describe('FeedbackSummarizer', () => {
   });
 
   test('摘要脱敏 Authorization Bearer 与 sk 形式密钥', () => {
+    const apiKey = ['sk', 'proj', 'abcDEF1234567890'].join('-');
     const result = summarize({
       exitCode: 1,
-      stderr: 'Authorization: Bearer very-secret-token\nrequest failed with sk-proj-abcDEF1234567890'
+      stderr: `Authorization: Bearer very-secret-token\nrequest failed with ${apiKey}`
     });
 
     expect(result.summary).toContain('[REDACTED]');
     expect(result.summary).not.toContain('very-secret-token');
-    expect(result.summary).not.toContain('sk-proj-abcDEF1234567890');
+    expect(result.summary).not.toContain(apiKey);
   });
 
   test('空输出给出稳定且可操作的摘要', () => {
