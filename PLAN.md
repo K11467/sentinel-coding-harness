@@ -67,6 +67,7 @@ Worktree：`feature/core-protocol`。P03 后执行，可由 2 个子 agent 顺�
 - **绿实现：** 固定 Node 20+、`vitest run`、`tsc --noEmit` 和最小 smoke test；不引入真实 LLM 或凭据。
 - **验证：** `npm ci`、`npm test -- tests/smoke.test.ts`、`npm run typecheck`。若 registry 证书失败，只允许诊断代理/CA 并配置可信 CA；禁止 `strict-ssl=false`、跳过 TLS 或改用不可信 registry。
 - **依赖：** P03。
+- **实际完成：** 红提交 `72d82bb` 让 Vitest 实际报告预期失败断言；绿提交 `04d5914` 加入锁文件和最小入口后通过。经临时、受信 CA 环境变量完成 `npm ci`，随后定向 smoke 与 `npm run typecheck` 均退出 0；未把 CA、代理或 TLS 配置写入仓库。
 
 ### T01 — 定义 action/config/会话 schema（约 3–5 分钟）
 
@@ -249,4 +250,5 @@ Worktree：`feature/cli-provider`（T12–T15）。
 | P01 | 已完成 | 主 agent（Codex） | 不适用：仅文档 | `227d3d4` | `git diff --check`；敏感串扫描通过 |
 | P02 | 已完成：发现规约缺陷 | Cursor Agent（独立目录） | 不适用 | 未合入代码 | 问题清单、无仓库写入、P03 修订待复测 |
 | P03 | 已完成：修订获确认 | 主 agent（Codex） | 不适用 | `59f1152`（文档修订） | Cursor 首次问题清单、用户转述二次无阻塞结论并批准开工 |
-| T00–T18 | 待开始 | - | - | - | - |
+| T00 | 已完成 | Terra 子 agent；Sol 只读复核 | `72d82bb` | `04d5914` | 红测实际退出 1；受信 CA 下 `npm ci`、定向 smoke、typecheck 均退出 0 |
+| T01–T18 | 待开始 | - | - | - | - |
