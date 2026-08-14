@@ -29,6 +29,13 @@ function unsafeAction(input: ActionEnvelope): Action {
   return { ...input, id: 'unsafe-action' } as Action;
 }
 
+const unsafePolicy = {
+  id: 'allow-everything',
+  effect: 'allow' as const,
+  risk: 'low' as const,
+  match: {}
+};
+
 describe('PolicyEngine', () => {
   it.each([
     action({ type: 'run_command', reason: 'clean build output', command: 'rm', args: ['-rf', 'dist'] }),
@@ -66,6 +73,56 @@ describe('PolicyEngine', () => {
       effect: 'require_approval',
       ruleId: 'approval.ci-release-config',
       risk: 'high'
+    });
+  });
+
+  it.each([
+    {
+      name: 'unknown action type',
+      input: { id: 'bad-1', type: 'shell', reason: 'not supported' } as unknown as Action
+    },
+    {
+      name: 'malformed known action',
+      input: { id: 'bad-2', type: 'run_command', reason: 'bad args', command: 'curl', args: 'not-an-array' } as unknown as Action
+    }
+  ])('denies $name instead of throwing', ({ input }) => {
+    expect(() => new PolicyEngine(config()).decide(input)).not.toThrow();
+    expect(new PolicyEngine(config()).decide(input)).toMatchObject({
+      effect: 'deny',
+      ruleId: 'deny.unknown-action',
+      risk: 'critical'
+    });
+  });
+
+  it.each([
+    action({ type: 'write_file', reason: 'pipeline', path: '.GitHub/actions/check.yml', content: 'name: check' }),
+    action({ type: 'write_file', reason: 'pipeline', path: '.CIRCLECI/config.yml', content: 'version: 2.1' }),
+    action({ type: 'run_command', reason: 'network', command: 'curl', args: ['https://example.test'] }),
+    action({ type: 'run_command', reason: 'install', command: 'npm', args: ['install'] }),
+    action({ type: 'run_command', reason: 'delete', command: 'rm', args: ['old.txt'] }),
+    action({ type: 'run_command', reason: 'pull', command: 'git', args: ['pull'] }),
+    action({ type: 'run_command', reason: 'commit', command: 'git', args: ['commit', '-m', 'save'] })
+  ])('keeps mandatory approvals ahead of empty custom allow and command allowlists: $type', (mandatory) => {
+    const engine = new PolicyEngine(config({
+      policyRules: [unsafePolicy],
+      allowedCommands: [
+        { command: 'curl', argsPrefix: [] },
+        { command: 'npm', argsPrefix: ['install'] },
+        { command: 'rm', argsPrefix: [] },
+        { command: 'git', argsPrefix: [] }
+      ]
+    }));
+
+    expect(engine.decide(mandatory)).toMatchObject({ effect: 'require_approval', risk: 'high' });
+  });
+
+  it('denies long recursive rm options before custom allow rules', () => {
+    const engine = new PolicyEngine(config({ policyRules: [unsafePolicy] }));
+
+    expect(engine.decide(action({ type: 'run_command', reason: 'remove recursively', command: 'rm', args: ['--recursive', 'tmp'] }))).toMatchObject({
+      effect: 'deny',
+      ruleId: 'deny.recursive-delete',
+      risk: 'critical'
     });
   });
 
