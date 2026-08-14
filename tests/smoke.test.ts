@@ -1,5 +1,6 @@
 import { expect, test } from 'vitest';
+import { harnessName } from '../src/index';
 
-test('Vitest 能报告失败的断言', () => {
-  expect(true).toBe(false);
+test('测试脚手架可导入最小入口', () => {
+  expect(harnessName).toBe('sentinel-coding-harness');
 });
