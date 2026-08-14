@@ -102,19 +102,32 @@ export interface CredentialStatus {
   readonly exists: boolean;
 }
 
+/**
+ * Item identity is injectable only for isolated tests. Production callers use
+ * the fixed Harness identity below and never accept it from user configuration.
+ */
+export interface KeychainItemIdentity {
+  readonly service: string;
+  readonly account: string;
+}
+
 export interface KeychainCredentialsOptions {
   readonly platform?: NodeJS.Platform | string;
   readonly runner?: SecurityProcessRunner;
+  /** Test-only isolation hook; do not source this from untrusted CLI input. */
+  readonly identity?: KeychainItemIdentity;
 }
 
 /** Stores one fixed Harness API-key item in the login Keychain. */
 export class MacOSKeychain {
   private readonly platform: NodeJS.Platform | string;
   private readonly runner: SecurityProcessRunner;
+  private readonly identity: KeychainItemIdentity;
 
   constructor(options: KeychainCredentialsOptions = {}) {
     this.platform = options.platform ?? process.platform;
     this.runner = options.runner ?? nodeSecurityProcessRunner;
+    this.identity = options.identity ?? { service: KEYCHAIN_SERVICE, account: KEYCHAIN_ACCOUNT };
   }
 
   async set(secret: string | undefined): Promise<void> {
@@ -124,7 +137,7 @@ export class MacOSKeychain {
 
     const result = await this.runner.spawn(
       SECURITY_EXECUTABLE,
-      ['add-generic-password', '-U', '-s', KEYCHAIN_SERVICE, '-a', KEYCHAIN_ACCOUNT, '-w'],
+      ['add-generic-password', '-U', '-s', this.identity.service, '-a', this.identity.account, '-w'],
       { shell: false, stdin: `${secret}\n${secret}\n` },
     );
     this.assertSuccess(result);
@@ -134,7 +147,7 @@ export class MacOSKeychain {
     this.assertMacOS();
     const result = await this.runner.spawn(
       SECURITY_EXECUTABLE,
-      ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', KEYCHAIN_ACCOUNT],
+      ['find-generic-password', '-s', this.identity.service, '-a', this.identity.account],
       { shell: false },
     );
     if (result.exitCode === 0) return { exists: true };
@@ -147,7 +160,7 @@ export class MacOSKeychain {
     this.assertMacOS();
     const result = await this.runner.spawn(
       SECURITY_EXECUTABLE,
-      ['delete-generic-password', '-s', KEYCHAIN_SERVICE, '-a', KEYCHAIN_ACCOUNT],
+      ['delete-generic-password', '-s', this.identity.service, '-a', this.identity.account],
       { shell: false },
     );
     this.assertSuccess(result);
@@ -161,11 +174,13 @@ export class MacOSKeychain {
     this.assertMacOS();
     const result = await this.runner.spawn(
       SECURITY_EXECUTABLE,
-      ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', KEYCHAIN_ACCOUNT, '-w'],
+      ['find-generic-password', '-s', this.identity.service, '-a', this.identity.account, '-w'],
       { shell: false, captureStdout: true },
     );
     this.assertSuccess(result);
-    return result.stdout ?? '';
+    // `security find-generic-password -w` appends one display line ending.
+    // Remove only that transport delimiter; never broadly trim a caller key.
+    return (result.stdout ?? '').replace(/\r?\n$/, '');
   }
 
   /** Alias retained for the provider integration's concise credential read. */

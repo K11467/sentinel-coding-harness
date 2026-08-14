@@ -125,6 +125,13 @@ describe('MacOSKeychain', () => {
     ]);
   });
 
+  test('get 去除 security -w 添加的单个行结束符，不改变内存中的 key 内容', async () => {
+    const value = 'provider-memory-only-value';
+    const runner = new FakeProcessRunner({ exitCode: 0, stdout: `${value}\n` });
+
+    await expect(macosKeychain(runner).get()).resolves.toBe(value);
+  });
+
   test('readSecret 的 stdout 或 stderr 不会进入异常', async () => {
     const value = 'read-output-must-not-escape';
     const runner = new FakeProcessRunner({ exitCode: 1, stdout: value, stderr: `not permitted: ${value}` });
