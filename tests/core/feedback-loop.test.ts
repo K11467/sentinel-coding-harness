@@ -5,6 +5,7 @@ import { ActionParser, type Action } from '../../src/domain/actions.js';
 import type { HarnessConfig } from '../../src/domain/config.js';
 import type { SessionState } from '../../src/domain/session.js';
 import { ScriptedMockLLM } from '../../src/llm/scripted-mock.js';
+import { ContextSensitiveMockLLM } from '../../src/llm/context-sensitive-mock.js';
 import { ApprovalService } from '../../src/security/approval.js';
 import { PolicyEngine } from '../../src/security/policy.js';
 
@@ -70,7 +71,7 @@ function createLoop(options: {
 }
 
 describe('AgentLoop governance and feedback integration', () => {
-  test('a verifier-backed failed test is fed back before the mock selects a different action', async () => {
+  test('a context-sensitive mock selects a different action only after verifier feedback is present', async () => {
     let testCalls = 0;
     const dispatcher = new ToolDispatcher({
       workspace: {
@@ -93,22 +94,73 @@ describe('AgentLoop governance and feedback integration', () => {
         }
       }
     });
-    const { loop, client } = createLoop({
-      dispatcher,
-      responses: [
-        { type: 'run_tests', reason: '验证当前方案' },
-        { type: 'remember', reason: '根据失败改选', note: '先检查断言' },
-        { type: 'finish', reason: '完成', summary: '已处理' }
-      ]
+    const client = new ContextSensitiveMockLLM({
+      firstResponse: { type: 'run_tests', reason: '验证当前方案' },
+      expectedFeedback: { category: 'assertion_failed', summary: '断言失败（退出码 1）。' },
+      feedbackResponse: { type: 'remember', reason: '根据失败改选', note: '先检查断言' },
+      finalResponse: { type: 'finish', reason: '完成', summary: '已处理' }
     });
+    const store = new InMemorySessionStore();
+    const loop = new AgentLoop({ config: config(), client, parser: parser(), dispatcher, sessions: store, now: clock });
 
     const result = await loop.run(createdSession());
 
     expect(result).toMatchObject({ status: 'completed', stopReason: 'finished', step: 3 });
     expect(result.recentActions.map((item) => item.type)).toEqual(['run_tests', 'remember', 'finish']);
     expect(testCalls).toBe(1);
+    expect(client.feedbackMatched).toBe(true);
     expect(client.contexts[1]!.recentFeedback).toEqual([{ category: 'assertion_failed', summary: '断言失败（退出码 1）。' }]);
     expect(client.contexts[1]!.recentSteps.at(-1)).toEqual({ action: 'run_tests', summary: '验证当前方案' });
+  });
+
+  test('ToolDispatcher only feeds whitelisted summarized feedback into AgentContext', async () => {
+    const authorization = 'Bearer authorization-secret-value';
+    const apiKey = 'api_key=api-key-secret-value';
+    const cookie = 'Cookie: session=cookie-secret-value';
+    const dispatcher = new ToolDispatcher({
+      workspace: {
+        async list() { return { ok: true as const, kind: 'list' as const, path: '.', entries: [] }; },
+        async read(path: string) { return { ok: true as const, kind: 'read' as const, path, content: '' }; },
+        async write(path: string, content: string) { return { ok: true as const, kind: 'write' as const, path, bytesWritten: content.length }; }
+      },
+      commands: {
+        async runCommand() { return { ok: true as const, kind: 'command' as const, exitCode: 0 as const, output: '', truncated: false }; },
+        async runTests() {
+          return {
+            ok: false as const,
+            kind: 'tests' as const,
+            exitCode: 1,
+            output: `AssertionError: failure\nAuthorization: ${authorization}\n${apiKey}\n${cookie}`,
+            truncated: false,
+            errorCode: 'nonzero_exit' as const
+          };
+        }
+      }
+    });
+    const client = new ContextSensitiveMockLLM({
+      firstResponse: { type: 'run_tests', reason: '验证受控测试' },
+      expectedFeedback: { category: 'assertion_failed', summary: '断言失败（退出码 1）。' },
+      feedbackResponse: { type: 'remember', reason: '收到安全摘要后改选', note: '不记录敏感输出' },
+      finalResponse: { type: 'finish', reason: '完成', summary: '已处理' }
+    });
+    const loop = new AgentLoop({
+      config: config(),
+      client,
+      parser: parser(),
+      dispatcher,
+      sessions: new InMemorySessionStore(),
+      now: clock
+    });
+
+    const result = await loop.run(createdSession());
+    const feedback = client.contexts[1]!.recentFeedback;
+
+    expect(result).toMatchObject({ status: 'completed', stopReason: 'finished' });
+    expect(client.feedbackMatched).toBe(true);
+    expect(feedback).toEqual([{ category: 'assertion_failed', summary: '断言失败（退出码 1）。' }]);
+    expect(JSON.stringify(feedback)).not.toContain(authorization);
+    expect(JSON.stringify(feedback)).not.toContain(apiKey);
+    expect(JSON.stringify(feedback)).not.toContain(cookie);
   });
 
   test('repeated action stops safely before the second dispatch', async () => {
