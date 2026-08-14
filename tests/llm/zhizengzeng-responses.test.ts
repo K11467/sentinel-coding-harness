@@ -4,11 +4,12 @@ import {
   ZhizengzengResponsesClient,
   type FetchLike,
 } from '../../src/llm/zhizengzeng-responses.js';
+import type { AgentContext } from '../../src/llm/client.js';
 
-const context = {
+const context: AgentContext = {
   task: '读取 package.json 并说明测试命令',
   workspace: '/tmp/workspace',
-  availableActions: ['read_file', 'finish'] as const,
+  availableActions: ['read_file', 'finish'],
   recentFeedback: [],
   notes: [],
   recentSteps: [],
