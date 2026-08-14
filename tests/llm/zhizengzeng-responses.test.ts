@@ -97,7 +97,7 @@ describe('ZhizengzengResponsesClient', () => {
     await expect(networkClient.decide(context)).rejects.not.toThrow('dns secret detail');
   });
 
-  test('缺少 output_text 或不安全 base URL 会 fail-closed', async () => {
+  test('缺少 output_text 会 fail-closed', async () => {
     const client = new ZhizengzengResponsesClient({
       credentials: new FakeCredentials(),
       fetcher: async () => response(200, { output: [] }),
@@ -105,10 +105,18 @@ describe('ZhizengzengResponsesClient', () => {
     await expect(client.decide(context)).rejects.toBeInstanceOf(ResponsesProviderError);
     await expect(client.decide(context)).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
 
+  });
+
+  test.each([
+    'http://api.zhizengzeng.com/v1/responses',
+    'https://evil.example/v1/responses',
+    'https://api.zhizengzeng.com@evil.example/v1/responses',
+    'https://api.zhizengzeng.com/v1/responses?redirect=evil',
+  ])('拒绝非官方 endpoint，避免 Bearer Key 外泄：%s', (baseUrl) => {
     expect(() => new ZhizengzengResponsesClient({
       credentials: new FakeCredentials(),
-      baseUrl: 'http://example.test/v1/responses',
+      baseUrl,
       fetcher: async () => response(200, {}),
-    })).toThrow('HTTPS');
+    })).toThrow('官方 HTTPS');
   });
 });
