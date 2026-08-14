@@ -100,7 +100,10 @@ describe('AgentLoop', () => {
 
   test('parser 拒绝 action 时安全停止且不调用 dispatcher', async () => {
     const { loop, actionDispatcher } = createLoop({
-      responses: [{ type: 'read_file', reason: '缺少 path' }]
+      responses: [
+        { type: 'read_file', reason: '缺少 path' },
+        { type: 'read_file', reason: '仍缺少 path' }
+      ]
     });
 
     const result = await loop.run(createdSession());

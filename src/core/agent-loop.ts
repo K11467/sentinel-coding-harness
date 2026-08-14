@@ -11,6 +11,8 @@ import {
   type StopReason
 } from '../domain/session.js';
 import type { AgentContext, LLMClient } from '../llm/client.js';
+import { hashAction, PolicyEngine } from '../security/policy.js';
+import type { ApprovalService } from '../security/approval.js';
 import { InMemorySessionStore, type SessionStore } from './session-store.js';
 
 const availableActions: AgentContext['availableActions'] = [
@@ -41,17 +43,23 @@ export interface AgentLoopOptions {
   dispatcher: ActionDispatcher;
   sessions: SessionStore;
   now?: () => Date;
+  policy?: PolicyEngine;
+  /** Optional until CLI wiring exists; missing approval infrastructure blocks safely. */
+  approval?: ApprovalService;
 }
 
 export class AgentLoop {
   private readonly now: () => Date;
+  private readonly policy: PolicyEngine;
 
   constructor(private readonly options: AgentLoopOptions) {
     this.now = options.now ?? (() => new Date());
+    this.policy = options.policy ?? new PolicyEngine(options.config);
   }
 
   async run(initial: SessionState): Promise<SessionState> {
     let session = sessionStateSchema.parse(structuredClone(initial));
+    let previousActionFingerprint: string | undefined;
 
     if (session.status === 'created') {
       session = this.toRunning(session);
@@ -63,20 +71,41 @@ export class AgentLoop {
         return this.stop(session, 'stopped', 'max_steps');
       }
 
-      let response: unknown;
-      try {
-        response = await this.options.client.decide(this.createContext(session));
-      } catch {
+      const action = await this.requestActionWithOneRepair(session);
+      if (action === 'provider_error') {
         return this.stop(session, 'failed', 'provider_error');
       }
-
-      const parsed = this.options.parser.parse(response);
-      if (!parsed.ok) {
+      if (action === undefined) {
         return this.stop(session, 'stopped', 'invalid_action');
       }
 
-      const action = parsed.action;
+      const actionFingerprint = fingerprint(action);
       session = this.recordAction(session, action);
+
+      if (previousActionFingerprint === actionFingerprint) {
+        return this.stop(session, 'stopped', 'repeated_action');
+      }
+      previousActionFingerprint = actionFingerprint;
+
+      const decision = this.policy.decide(action);
+      if (decision.effect === 'deny') {
+        return this.stop(session, 'blocked', 'policy_denied');
+      }
+      if (decision.effect === 'require_approval') {
+        if (this.options.approval === undefined) {
+          return this.stop(session, 'blocked', 'policy_denied');
+        }
+        try {
+          await this.options.sessions.save(session);
+          const requested = await this.options.approval.request(session.id, action, decision);
+          if (!requested.ok || requested.session === undefined) {
+            return this.stop(session, 'blocked', 'policy_denied');
+          }
+          return requested.session;
+        } catch {
+          return this.stop(session, 'blocked', 'policy_denied');
+        }
+      }
 
       if (action.type === 'finish') {
         return this.stop(session, 'completed', 'finished');
@@ -109,12 +138,34 @@ export class AgentLoop {
     return session;
   }
 
-  private createContext(session: SessionState): AgentContext {
+  private async requestActionWithOneRepair(session: SessionState): Promise<Action | 'provider_error' | undefined> {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      let response: unknown;
+      try {
+        response = await this.options.client.decide(this.createContext(
+          session,
+          attempt === 0 ? [] : [{ category: 'command_error', summary: '动作格式无效，请只返回符合协议的 JSON action。' }]
+        ));
+      } catch {
+        return 'provider_error';
+      }
+      const parsed = this.options.parser.parse(response);
+      if (parsed.ok) {
+        return parsed.action;
+      }
+    }
+    return undefined;
+  }
+
+  private createContext(session: SessionState, transientFeedback: AgentContext['recentFeedback'] = []): AgentContext {
     return {
       task: session.task,
       workspace: this.options.config.workspaceRoot,
       availableActions: [...availableActions],
-      recentFeedback: session.recentFeedback.map(({ category, summary }) => ({ category, summary })),
+      recentFeedback: [
+        ...session.recentFeedback.map(({ category, summary }) => ({ category, summary })),
+        ...transientFeedback.map(({ category, summary }) => ({ category, summary }))
+      ],
       notes: [],
       recentSteps: session.recentActions.map(({ type, reason }) => ({ action: type, summary: reason }))
     };
@@ -144,6 +195,12 @@ export class AgentLoop {
 
 function keepRecent<T>(items: T[]): T[] {
   return items.slice(-maxRecentItems);
+}
+
+/** Parser IDs are intentionally excluded so the same requested operation cannot spin forever. */
+function fingerprint(action: Action): string {
+  const { id: _id, ...envelope } = action;
+  return hashAction(envelope);
 }
 
 export { InMemorySessionStore } from './session-store.js';
