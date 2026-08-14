@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod as chmodFile, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { InMemorySessionStore } from '../../src/core/session-store.js';
 import { FileSessionStore } from '../../src/core/file-session-store.js';
 import type { Action, ActionEnvelope } from '../../src/domain/actions.js';
@@ -209,6 +209,68 @@ describe('ApprovalService', () => {
     expect((await stat(statePath)).mode & 0o777).toBe(0o600);
   });
 
+  it.each([0o755, 0o777])('tightens a pre-existing %o state directory and every transient file permission', async (initialMode) => {
+    const statePath = await stateFilePath();
+    const stateDirectory = dirname(statePath);
+    await chmodFile(stateDirectory, initialMode);
+    const observedModes = new Map<string, number>();
+    const store = new FileSessionStore(statePath, {
+      operations: {
+        chmod: async (path, mode) => {
+          await chmodFile(path, mode);
+          observedModes.set(path, (await stat(path)).mode & 0o777);
+        }
+      }
+    });
+
+    await store.save(session());
+
+    expect((await stat(stateDirectory)).mode & 0o777).toBe(0o700);
+    expect((await stat(statePath)).mode & 0o777).toBe(0o600);
+    expect(observedModes.get(`${statePath}.lock`)).toBe(0o600);
+    expect([...observedModes.entries()].some(([path, mode]) => path.endsWith('.approval-state.tmp') && mode === 0o600)).toBe(true);
+  });
+
+  it('serializes concurrent request, approval, and claim from independent file-store instances', async () => {
+    const statePath = await stateFilePath();
+    const bootstrap = new FileSessionStore(statePath);
+    await bootstrap.save(session());
+    const policy = new PolicyEngine(config());
+    const pending = action({ type: 'write_file', reason: '更新项目元数据', path: 'package.json', content: '{}' });
+    const decision = policy.decide(pending);
+    const requestA = new ApprovalService(new FileSessionStore(statePath), policy, { clock: () => now });
+    const requestB = new ApprovalService(new FileSessionStore(statePath), policy, { clock: () => now });
+
+    const requests = await Promise.all([
+      requestA.request('session-1', pending, decision),
+      requestB.request('session-1', pending, decision)
+    ]);
+    expect(requests.filter((result) => result.ok)).toHaveLength(1);
+    expect(await bootstrap.read('session-1')).toMatchObject({ version: 1, session: { status: 'waiting_approval', pendingAction: { actionHash: decision.actionHash } } });
+    expect(await bootstrap.getApproval('session-1', decision.actionHash)).toMatchObject({ status: 'pending' });
+
+    const approveA = new ApprovalService(new FileSessionStore(statePath), policy, { clock: () => now });
+    const approveB = new ApprovalService(new FileSessionStore(statePath), policy, { clock: () => now });
+    await Promise.all([
+      approveA.approve('session-1', decision.actionHash),
+      approveB.approve('session-1', decision.actionHash)
+    ]);
+    expect(await bootstrap.read('session-1')).toMatchObject({ version: 2, session: { status: 'waiting_approval', pendingAction: { actionHash: decision.actionHash } } });
+    expect(await bootstrap.getApproval('session-1', decision.actionHash)).toMatchObject({ status: 'approved' });
+
+    const claimA = new ApprovalService(new FileSessionStore(statePath), policy, { clock: () => now });
+    const claimB = new ApprovalService(new FileSessionStore(statePath), policy, { clock: () => now });
+    const claims = await Promise.all([
+      claimA.claim('session-1', decision.actionHash),
+      claimB.claim('session-1', decision.actionHash)
+    ]);
+    expect(claims.filter((result) => result.ok)).toHaveLength(1);
+    const completed = await bootstrap.read('session-1');
+    expect(completed).toMatchObject({ version: 3, session: { status: 'running' } });
+    expect(completed?.session.pendingAction).toBeUndefined();
+    expect(await bootstrap.getApproval('session-1', decision.actionHash)).toMatchObject({ status: 'consumed' });
+  });
+
   it('does not leave a waiting session without its record when an atomic request rename fails', async () => {
     const statePath = await stateFilePath();
     const setupStore = new FileSessionStore(statePath);
@@ -225,6 +287,19 @@ describe('ApprovalService', () => {
     const restored = new FileSessionStore(statePath);
     expect((await restored.read('session-1'))?.session).toMatchObject({ status: 'running' });
     expect(await restored.getApproval('session-1', decision.actionHash)).toBeUndefined();
+  });
+
+  it('does not leave an approved record when an atomic approve rename fails', async () => {
+    const { statePath, policy, decision } = await requestedInFile();
+    const failingStore = new FileSessionStore(statePath, {
+      operations: { rename: async () => { throw new Error('injected rename failure'); } }
+    });
+    const failingService = new ApprovalService(failingStore, policy, { clock: () => now });
+
+    expect(await failingService.approve('session-1', decision.actionHash)).toMatchObject({ ok: false, error: { code: 'storage_failure' } });
+    const restored = new FileSessionStore(statePath);
+    expect((await restored.read('session-1'))?.session).toMatchObject({ status: 'waiting_approval' });
+    expect(await restored.getApproval('session-1', decision.actionHash)).toMatchObject({ status: 'pending' });
   });
 
   it('does not leave a restored running session with an unconsumed record when an atomic claim rename fails', async () => {
@@ -267,6 +342,18 @@ describe('ApprovalService', () => {
     raw.approvals[key]!.createdAt = 'not-an-iso-date';
     await writeFile(statePath, JSON.stringify(raw), { mode: 0o600 });
     const malformed = new ApprovalService(new FileSessionStore(statePath), policy, { clock: () => clock.value });
+    expect(await malformed.claim('session-1', decision.actionHash)).toMatchObject({ ok: false, error: { code: 'storage_invalid' } });
+  });
+
+  it('fails closed when approval event timestamps are not causally ordered', async () => {
+    const { statePath, service, policy, decision } = await requestedInFile();
+    expect(await service.approve('session-1', decision.actionHash)).toMatchObject({ ok: true });
+    const raw = JSON.parse(await readFile(statePath, 'utf8')) as { approvals: Record<string, { approvedAt: string }> };
+    const key = Object.keys(raw.approvals)[0]!;
+    raw.approvals[key]!.approvedAt = '2020-01-01T00:00:00.000Z';
+    await writeFile(statePath, JSON.stringify(raw), { mode: 0o600 });
+
+    const malformed = new ApprovalService(new FileSessionStore(statePath), policy, { clock: () => now });
     expect(await malformed.claim('session-1', decision.actionHash)).toMatchObject({ ok: false, error: { code: 'storage_invalid' } });
   });
 });
