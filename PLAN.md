@@ -87,6 +87,7 @@ Worktree：`feature/core-protocol`。P03 后执行，可由 2 个子 agent 顺�
 - **绿实现：** 只暴露 `decide(context)`；不包含 agent loop。
 - **验证：** `npm test -- scripted-mock`。
 - **依赖：** T01。
+- **实际完成：** 红/绿为 `e6a8a80` / `997e75e`，并以合并提交 `74b6df6` 纳入核心分支。4 个定向、36 个全量测试和 typecheck 通过；mock 只消费预设响应并深拷贝记录 context，不含 provider、凭据或工具执行能力。
 
 ### T03 — 会话状态机与主循环骨架（约 4–5 分钟）
 
@@ -253,4 +254,5 @@ Worktree：`feature/cli-provider`（T12–T15）。
 | P03 | 已完成：修订获确认 | 主 agent（Codex） | 不适用 | `59f1152`（文档修订） | Cursor 首次问题清单、用户转述二次无阻塞结论并批准开工 |
 | T00 | 已完成 | Terra 子 agent；Sol 只读复核 | `72d82bb` | `04d5914` | 红测实际退出 1；受信 CA 下 `npm ci`、定向 smoke、typecheck 均退出 0 |
 | T01 | 已完成（含审查修复） | Terra 子 agent；Sol 只读复核 | `b04062a`、`d889477` | `4b9537a`、`ca0a8f4` | 31 个定向 / 32 个全量测试、typecheck、diff、精确 secret scan 通过 |
-| T02–T18 | 待开始 | - | - | - | - |
+| T02 | 已完成 | Terra 子 agent；Sol 只读复核 | `e6a8a80` | `997e75e` | 4 个定向 / 36 个全量测试、typecheck、diff、精确 secret scan 通过 |
+| T03–T18 | 待开始 | - | - | - | - |
