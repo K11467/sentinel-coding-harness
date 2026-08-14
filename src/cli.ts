@@ -13,8 +13,17 @@ export const EXIT = {
 export interface CliDependencies {
   cwd?: string;
   loadConfig?: (options: LoadHarnessConfigOptions) => LoadedHarnessConfig;
+  credentials?: CredentialStore;
+  readHidden?: () => Promise<string | undefined>;
   writeStdout?: (line: string) => void;
   writeStderr?: (line: string) => void;
+}
+
+/** Narrow adapter implemented by T12 after its Keychain code is merged. */
+export interface CredentialStore {
+  status(): Promise<{ exists: boolean }>;
+  set(value: string | undefined): Promise<void>;
+  clear(): Promise<void>;
 }
 
 class CliUsageError extends Error {
@@ -23,6 +32,25 @@ class CliUsageError extends Error {
     this.name = 'CliUsageError';
   }
 }
+
+class CliUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CliUnavailableError';
+  }
+}
+
+const unavailableCredentials: CredentialStore = {
+  async status() {
+    return { exists: false };
+  },
+  async set() {
+    throw new CliUnavailableError('当前运行环境未提供 Keychain 凭据适配器；请完成 credentials 集成后重试。');
+  },
+  async clear() {
+    throw new CliUnavailableError('当前运行环境未提供 Keychain 凭据适配器；请完成 credentials 集成后重试。');
+  },
+};
 
 function parseConfigPath(args: readonly string[]): string | undefined {
   if (args.length === 0) return undefined;
@@ -43,7 +71,41 @@ function safeErrorMessage(error: unknown): string {
 }
 
 function usage(): string {
-  return '用法：sentinel config check [--config <path>]';
+  return '用法：sentinel <config check|credentials status|credentials set|credentials clear> [--config <path>]';
+}
+
+async function runCredentials(
+  args: readonly string[],
+  credentials: CredentialStore,
+  readHidden: (() => Promise<string | undefined>) | undefined,
+  writeStdout: (line: string) => void,
+): Promise<number> {
+  if (args.length !== 1) {
+    throw new CliUsageError('credentials 仅支持 status、set 或 clear，且不接受凭据命令行参数。');
+  }
+
+  switch (args[0]) {
+    case 'status': {
+      const status = await credentials.status();
+      writeStdout(status.exists ? '凭据状态：已配置。' : '凭据状态：未配置。请执行 credentials set。');
+      return EXIT.OK;
+    }
+    case 'set': {
+      if (readHidden === undefined) {
+        throw new CliUnavailableError('当前运行环境未提供隐藏凭据输入；请完成 Keychain 凭据集成后重试。');
+      }
+      const secret = await readHidden();
+      await credentials.set(secret);
+      writeStdout('凭据已保存到系统安全存储。');
+      return EXIT.OK;
+    }
+    case 'clear':
+      await credentials.clear();
+      writeStdout('凭据已清除。');
+      return EXIT.OK;
+    default:
+      throw new CliUsageError('credentials 仅支持 status、set 或 clear。');
+  }
 }
 
 /**
@@ -56,11 +118,16 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
   const writeStderr = dependencies.writeStderr ?? ((line: string) => process.stderr.write(`${line}\n`));
   const cwd = dependencies.cwd ?? process.cwd();
   const loadConfig = dependencies.loadConfig ?? loadHarnessConfig;
+  const credentials = dependencies.credentials ?? unavailableCredentials;
 
   try {
     if (argv.length === 0 || argv[0] === '--help' || argv[0] === '-h') {
       writeStdout(usage());
       return EXIT.OK;
+    }
+
+    if (argv[0] === 'credentials') {
+      return await runCredentials(argv.slice(1), credentials, dependencies.readHidden, writeStdout);
     }
 
     if (argv[0] !== 'config' || argv[1] !== 'check') {
@@ -73,6 +140,8 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
     return EXIT.OK;
   } catch (error) {
     writeStderr(safeErrorMessage(error));
-    return error instanceof CliUsageError ? EXIT.USAGE : EXIT.CONFIG;
+    if (error instanceof CliUsageError) return EXIT.USAGE;
+    if (error instanceof CliUnavailableError) return EXIT.UNAVAILABLE;
+    return argv[0] === 'config' ? EXIT.CONFIG : EXIT.FAILURE;
   }
 }

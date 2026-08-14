@@ -93,7 +93,9 @@ describe('CLI credentials commands', () => {
       readHidden: async () => enteredValue,
       credentials: {
         status: async () => ({ exists: false }),
-        set: async (value) => received.push(value ?? ''),
+        set: async (value) => {
+          received.push(value ?? '');
+        },
         clear: async () => undefined,
       },
     });
