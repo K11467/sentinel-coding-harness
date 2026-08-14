@@ -34,7 +34,10 @@ function parser(): ActionParser {
   return new ActionParser(() => `action-${++nextId}`);
 }
 
-function dispatcher(result = { category: 'passed' as const, summary: '工具已完成' }): ActionDispatcher & { actions: Action[] } {
+function dispatcher(result: { category: 'passed' | 'assertion_failed' | 'type_error' | 'command_error' | 'timeout'; summary: string } = {
+  category: 'passed',
+  summary: '工具已完成'
+}): ActionDispatcher & { actions: Action[] } {
   return {
     actions: [],
     async dispatch(action) {
@@ -62,7 +65,7 @@ function createLoop(options: {
     now: clock
   });
 
-  return { loop, store, client, actionDispatcher };
+  return { loop, store, client, actionDispatcher: actionDispatcher as ActionDispatcher & { actions: Action[] } };
 }
 
 describe('AgentLoop', () => {
@@ -147,7 +150,7 @@ describe('AgentLoop', () => {
   });
 
   test('action 与 feedback 均只保留最近 8 条', async () => {
-    const responses = Array.from({ length: 10 }, (_, index) => ({
+    const responses: unknown[] = Array.from({ length: 10 }, (_, index) => ({
       type: 'remember', reason: `记录第 ${index + 1} 步`, note: `note-${index + 1}`
     }));
     responses.push({ type: 'finish', reason: '结束', summary: '完成' });
