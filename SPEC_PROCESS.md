@@ -7,7 +7,7 @@
 - **主开发 agent：** Codex，使用 Superpowers 的 brainstorming 流程组织需求、规约和计划。
 - **规约辅助：** 结构化输出技能用于定义可验证的 action JSON；OpenAI Docs/智增增文档用于确认 Responses endpoint 形态。
 - **人类负责人：** 项目作者。负责项目方向、风险取舍、预算、平台、最终反思和对外发布确认。
-- **异构冷启动 agent：** 尚未执行。必须在 P02 使用与 Codex 类型不同的新会话，且只提供本仓库的 `SPEC.md` 和 `PLAN.md`。
+- **异构冷启动 agent：** Cursor Agent 已在 P02 的独立新会话运行；它只获得 `SPEC.md` 和 `PLAN.md`，其暂停问题驱动了 P03 修订。
 
 ## 2. 关键 brainstorming 迭代
 
@@ -70,3 +70,10 @@
 **模型分工。** 人类首先希望 Luna 执行、Sol 协调；当前内置子 agent 运行时仅允许 Terra/Sol，因此批准 Terra 执行单一 task、Sol 进行规格/测试/进度门禁。所有 AGENT_LOG、commit 和 PR 将如实标记实际模型。
 
 **结论。** P03 完成。后续实现从 T00 开始，仍保留 Cursor 初次暂停的问题、修订 diff 和二次非阻塞确认作为规约质量证据。
+
+## 6. 实现后的规约回看
+
+- 冷启动暴露的 schema、脚手架和状态契约歧义最终都被写成了可运行的红测；后续安全审查又分别发现了工作区 TOCTOU、解释器绕过、审批原子性、Keychain cleanup、Provider endpoint 钉扎和 CLI 审计可用性问题。
+- 这些问题没有通过改写旧提交掩盖，而是以追加红测、最小修复、复核和合并的方式记录在 `PLAN.md`、`AGENT_LOG.md` 与 Git 历史中。
+- 最终机制验证使用 mock、fake fetch、临时 Keychain smoke 或离线 demo；没有把真实模型请求、真实费用或未导出的异构测试写成已通过。
+- 项目作者仍需本人完成 `REFLECTION.md`；本文只记录过程证据，不代写个人课程反思。
