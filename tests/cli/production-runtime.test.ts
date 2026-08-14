@@ -78,6 +78,14 @@ describe('production CLI runtime', () => {
     const rawAudit = await readFile(join(workspaceRoot, '.sentinel', 'audit.jsonl'), 'utf8');
     expect(audit.some((entry) => entry.event === 'policy_decision')).toBe(true);
     expect(audit.some((entry) => entry.event === 'tool_result' && entry.tool?.kind === 'write_file')).toBe(true);
+    expect(audit).toContainEqual(expect.objectContaining({
+      event: 'state_transition',
+      state: expect.objectContaining({ from: 'waiting_approval', to: 'running' }),
+    }));
+    expect(audit).toContainEqual(expect.objectContaining({
+      event: 'state_transition',
+      state: expect.objectContaining({ from: 'running', to: 'completed' }),
+    }));
     expect(rawAudit).not.toContain('key-must-remain-in-memory');
     expect(rawAudit).not.toContain('approved content');
   });
