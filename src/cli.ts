@@ -5,7 +5,9 @@ import { createProductionRuntime } from './cli-runtime.js';
 import { MacOSKeychain } from './credentials/keychain.js';
 import { runMechanismScenarios } from './demo/scenarios.js';
 import type { SessionState } from './domain/session.js';
+import type { AuditRecord } from './observability/audit.js';
 import { redactText } from './observability/redact.js';
+import { PolicyEngine } from './security/policy.js';
 
 /** Stable process-style results for CLI callers and the later executable wrapper. */
 export const EXIT = {
@@ -42,7 +44,7 @@ export interface CliRuntime {
   approve(input: { sessionId: string; actionHash: string; config: LoadedHarnessConfig }): Promise<SessionState>;
   reject(input: { sessionId: string; actionHash: string; config: LoadedHarnessConfig }): Promise<SessionState>;
   inspect?(input: { sessionId: string; config: LoadedHarnessConfig }): Promise<SessionState>;
-  audit?(input: { sessionId: string; config: LoadedHarnessConfig }): Promise<unknown[]>;
+  audit?(input: { sessionId: string; config: LoadedHarnessConfig }): Promise<AuditRecord[]>;
   demo(): Promise<SessionState>;
 }
 
@@ -274,6 +276,61 @@ function sessionSummary(session: SessionState): string {
   return redactText(`会话 ${session.id}：status=${session.status}，step=${session.step}${reason}`, 1024);
 }
 
+const actionTypes = new Set(['list_files', 'read_file', 'write_file', 'run_command', 'run_tests', 'remember', 'finish']);
+const policyEffects = new Set(['allow', 'require_approval', 'deny']);
+const policyRisks = new Set(['low', 'medium', 'high', 'critical']);
+const sessionStatuses = new Set(['created', 'running', 'waiting_approval', 'completed', 'stopped', 'blocked', 'failed', 'budget_exhausted', 'cancelled']);
+
+function safeDisplay(value: unknown, maxBytes = 256): string {
+  return typeof value === 'string'
+    ? redactText(value.replace(/[\r\n\0]/g, ' '), maxBytes)
+    : 'unknown';
+}
+
+function safeEnum(value: unknown, allowed: ReadonlySet<string>): string {
+  return typeof value === 'string' && allowed.has(value) ? value : 'unknown';
+}
+
+/** Displays only approval metadata, never a pending write body or command output. */
+function inspectionSummary(session: SessionState, config: LoadedHarnessConfig): string {
+  const lines = [sessionSummary(session)];
+  if (session.status !== 'waiting_approval' || session.pendingAction === undefined) return lines.join('\n');
+
+  const { action, actionHash } = session.pendingAction;
+  const details = action.type === 'list_files'
+    ? action.path === undefined ? '' : `，path=${safeDisplay(action.path)}`
+    : action.type === 'read_file' || action.type === 'write_file'
+      ? `，path=${safeDisplay(action.path)}`
+      : action.type === 'run_command'
+        ? `，command=${safeDisplay(action.command)}`
+        : '';
+  const decision = new PolicyEngine(config).decide(action);
+  lines.push(`待审批：type=${action.type}${details}，actionHash=${safeDisplay(actionHash)}`);
+  lines.push(`策略：effect=${safeEnum(decision.effect, policyEffects)}，rule=${safeDisplay(decision.ruleId)}，risk=${safeEnum(decision.risk, policyRisks)}，reason=${safeDisplay(decision.reason)}`);
+  return lines.join('\n');
+}
+
+/** Converts one normalized audit record through a fixed, non-serializing display allowlist. */
+function auditSummary(record: AuditRecord): string {
+  const actionType = safeEnum(record.action?.type, actionTypes);
+  switch (record.event) {
+    case 'policy_decision':
+      return `策略：action=${actionType}，effect=${safeEnum(record.policy?.effect, policyEffects)}，rule=${safeDisplay(record.policy?.ruleId)}，risk=${safeEnum(record.policy?.risk, policyRisks)}，reason=${safeDisplay(record.policy?.reason)}`;
+    case 'tool_result': {
+      const exitCode = Number.isSafeInteger(record.tool?.exitCode) ? `，exitCode=${record.tool!.exitCode}` : '';
+      const errorCode = record.tool?.errorCode === undefined ? '' : `，error=${safeDisplay(record.tool.errorCode)}`;
+      const output = record.tool?.output === undefined ? '' : `，summary=${safeDisplay(record.tool.output)}`;
+      return `工具：action=${actionType}，kind=${safeEnum(record.tool?.kind, actionTypes)}，ok=${record.tool?.ok === true ? 'true' : 'false'}${exitCode}${errorCode}${output}`;
+    }
+    case 'state_transition': {
+      const reason = record.state?.reason === undefined ? '' : `，reason=${safeDisplay(record.state.reason)}`;
+      return `状态：from=${safeEnum(record.state?.from, sessionStatuses)}，to=${safeEnum(record.state?.to, sessionStatuses)}${reason}`;
+    }
+    default:
+      return '审计：未识别条目。';
+  }
+}
+
 async function runSessionCommand(
   command: string,
   args: readonly string[],
@@ -325,12 +382,15 @@ async function runSessionCommand(
     const input = { sessionId: positional[0]!, config };
     if (command === 'inspect') {
       if (runtime.inspect === undefined) throw new CliUnavailableError('当前运行环境未提供持久会话检查功能。');
-      writeStdout(sessionSummary(await runtime.inspect(input)));
+      writeStdout(inspectionSummary(await runtime.inspect(input), config));
       return EXIT.OK;
     }
     if (runtime.audit === undefined) throw new CliUnavailableError('当前运行环境未提供审计读取功能。');
     const records = await runtime.audit(input);
     writeStdout(`审计记录：${records.length}。`);
+    for (const record of records) {
+      writeStdout(auditSummary(record));
+    }
     return EXIT.OK;
   }
 
