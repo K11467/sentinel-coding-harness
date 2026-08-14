@@ -254,7 +254,7 @@ function isSafeCommand(command: unknown): command is string {
 
 function isSafeArgs(args: unknown): args is string[] {
   return Array.isArray(args)
-    && args.every((arg) => typeof arg === 'string' && !forbiddenCommandCharacters.test(arg));
+    && args.every((arg) => typeof arg === 'string' && arg.length > 0 && !forbiddenCommandCharacters.test(arg));
 }
 
 function killProcessGroup(child: ChildProcess): void {
