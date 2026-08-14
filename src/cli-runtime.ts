@@ -158,6 +158,7 @@ export function createProductionRuntime(options: ProductionRuntimeOptions): Prod
 
       // claim() already recomputes PolicyEngine, then this fresh dispatcher repeats
       // the workspace/path fence immediately before the only actual execution.
+      await appendStateTransition(parts.audit, sessionId, 'waiting_approval', claimed.session);
       await appendPolicyDecision(parts.audit, sessionId, claimed.action, parts.policy.decide(claimed.action));
       const feedback = await parts.dispatcher.dispatch(claimed.action);
       const recorded = feedbackSummarySchema.safeParse({
@@ -173,7 +174,7 @@ export function createProductionRuntime(options: ProductionRuntimeOptions): Prod
       });
       await parts.store.save(resumed);
       const result = await parts.loop.run(resumed);
-      await appendStateTransition(parts.audit, sessionId, 'waiting_approval', result);
+      await appendStateTransition(parts.audit, sessionId, resumed.status, result);
       return result;
     },
 
