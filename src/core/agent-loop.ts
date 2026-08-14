@@ -11,7 +11,7 @@ import {
   type StopReason
 } from '../domain/session.js';
 import type { AgentContext, LLMClient } from '../llm/client.js';
-import { hashAction, PolicyEngine } from '../security/policy.js';
+import { hashAction, PolicyEngine, type PolicyDecision } from '../security/policy.js';
 import type { ApprovalService } from '../security/approval.js';
 import { InMemorySessionStore, type SessionStore } from './session-store.js';
 
@@ -46,6 +46,8 @@ export interface AgentLoopOptions {
   policy?: PolicyEngine;
   /** Optional until CLI wiring exists; missing approval infrastructure blocks safely. */
   approval?: ApprovalService;
+  /** Durable observers may record a redacted policy decision before dispatch. */
+  onPolicyDecision?: (input: { sessionId: string; action: Action; decision: PolicyDecision }) => Promise<void>;
 }
 
 export class AgentLoop {
@@ -88,6 +90,7 @@ export class AgentLoop {
       previousActionFingerprint = actionFingerprint;
 
       const decision = this.policy.decide(action);
+      await this.options.onPolicyDecision?.({ sessionId: session.id, action, decision });
       if (decision.effect === 'deny') {
         return this.stop(session, 'blocked', 'policy_denied');
       }
