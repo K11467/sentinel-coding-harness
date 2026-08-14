@@ -2,7 +2,7 @@
 
 本指南描述最终提交时应能离线复现的三项核心机制。演示目标是验证治理链路，而不是证明模型“很聪明”：所有正式 demo 都应使用脚本化 mock，不需要网络、API Key 或真实费用。
 
-> 当前状态：CLI 的 `demo` 入口已经存在并可运行离线 mock；下面三段完整的确定性演示和断言，须待 T15 合入后以最终命令执行。提交前请以实际输出更新本文件，不要把尚未运行的命令写成已通过。
+> 当前状态：T15 已合入。`npm run demo` 和编译后的 `sentinel demo` 都会执行三个确定性场景，不访问网络、Provider 或 Keychain。完整断言在 `tests/demo/mechanisms.test.ts`。
 
 ## 演示前检查
 
@@ -20,10 +20,10 @@ node dist/cli.js demo
 
 **目标**：证明模型即便产出看似合法的危险 command，也不会绕过 parser、policy 与工具层。
 
-最终 T15 演示命令（待合入后以实际命令替换）：
+演示命令：
 
 ```bash
-npm run demo -- danger-intercept
+npm run demo
 ```
 
 预期应观察到：
@@ -38,10 +38,10 @@ npm run demo -- danger-intercept
 
 **目标**：证明 loop 根据确定性的工具结果调整，而不是接受模型自评“修好了”。
 
-最终 T15 演示命令（待合入后以实际命令替换）：
+演示命令：
 
 ```bash
-npm run demo -- feedback-repair
+npm run demo
 ```
 
 预期应观察到：
@@ -57,10 +57,10 @@ npm run demo -- feedback-repair
 
 **目标**：证明需要人工确认的动作不会直接执行，且批准只能恢复当时已持久化、未被篡改的 action。
 
-最终 T15 演示命令（待合入后以实际命令替换）：
+演示命令：
 
 ```bash
-npm run demo -- approval-resume
+npm run demo
 ```
 
 预期应观察到：
@@ -76,3 +76,5 @@ npm run demo -- approval-resume
 - 只展示脱敏日志和假的测试 Key，绝不在终端或录屏中输入真实 API Key。
 - 将 `harness.yaml`、演示输入、会话状态和审计片段一并保留，方便助教复核。
 - 对“真实 Provider smoke test”单独说明它不是课程机制验收的必要条件，且不应作为 CI 或 demo 的默认步骤。
+
+一次成功的 demo 会输出 `dangerous-action`、`feedback-adaptation`、`approval-once` 三行“通过”。

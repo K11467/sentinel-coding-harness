@@ -48,7 +48,7 @@ npm run check
 npm run build
 ```
 
-`npm test` 与 `npm run check` 均使用脚本化 mock，不读取 API Key，也不请求 Provider，可作为离线检查。`npm run demo` 当前运行离线 mock 的 CLI 演示入口；完整的三机制可复现实验将在 T15 合入后补充为确定性 demo，操作说明见 [DEMO_GUIDE.md](DEMO_GUIDE.md)。
+`npm test` 与 `npm run check` 均使用脚本化 mock，不读取 API Key，也不请求 Provider，可作为离线检查。`npm run demo` 会离线运行三个确定性机制场景：危险动作在分发前被拦截、失败反馈导致下一步改选、审批只能消费一次。操作说明见 [DEMO_GUIDE.md](DEMO_GUIDE.md)。
 
 发布版会以 GitHub Release 附件中的 npm tarball 提供。Release 建立后，可使用 Release 页面给出的 `.tgz` 文件安装；请同时核对发布的 SHA-256 与 Node/macOS 前提。
 
@@ -60,11 +60,13 @@ sentinel credentials status|set|clear
 sentinel run <task> [--config <path>]
 sentinel resume <session> [--config <path>]
 sentinel approve <session> <action-hash> [--config <path>]
-sentinel reject <session> <action-hash> [--config <path>]
+sentinel reject|deny <session> <action-hash> [--config <path>]
+sentinel inspect <session> [--config <path>]
+sentinel audit <session> [--config <path>]
 sentinel demo
 ```
 
-CLI 明确拒绝 `--api-key`。`config check`、`credentials status` 和 `demo` 是最适合先验证安装的无真实 Provider 命令。`run/resume/approve/reject` 的完整运行时接线会随着后续集成任务完成；不要把当前命令外壳误认为已经允许真实模型自行执行任意操作。
+CLI 明确拒绝 `--api-key`。`config check`、`credentials status` 和 `demo` 是最适合先验证安装的无真实 Provider 命令。`run` 会从 Keychain 仅内存读取凭据，将模型输出依次交给 parser、策略、审批、围栏工具和反馈层；它不是任意终端执行器。需要审批时先用 `inspect` 查看脱敏的动作摘要、风险和 action hash，再使用 `approve` 或 `deny`；`audit` 只展示脱敏、截断的策略/工具/状态摘要。
 
 ## 配置示例
 

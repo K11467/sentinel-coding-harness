@@ -258,6 +258,18 @@ Worktree：`feature/cli-provider`（T12–T15）。
 | T01 | 已完成（含审查修复） | Terra 子 agent；Sol 只读复核 | `b04062a`、`d889477` | `4b9537a`、`ca0a8f4` | 31 个定向 / 32 个全量测试、typecheck、diff、精确 secret scan 通过 |
 | T02 | 已完成 | Terra 子 agent；Sol 只读复核 | `e6a8a80` | `997e75e` | 4 个定向 / 36 个全量测试、typecheck、diff、精确 secret scan 通过 |
 | T03 | 已完成 | Terra 子 agent；Sol 只读复核 | `3788a2b` | `68eff8c` | 7 个定向 / 43 个全量测试、typecheck、diff、精确 secret scan 通过 |
-| T04 | 评审修复中 | Terra 子 agent；Sol 只读复核 | `f02d9ce` | `5c850d7`（暂未合入） | 发现 parent-symlink TOCTOU，必须补可重复竞态测试和安全实现 |
+| T04 | 已完成（含竞态修复） | Terra 子 agent；Sol 只读复核 | `f02d9ce`、`7107130`、`1a78fd9` | `5c850d7`、`d209a3d`、`ec3eb15` | 12 个围栏测试、parent-symlink 竞态和 256 KiB 边界通过；以 `d8c81ab` 合入 |
 | T10 | 已完成 | Terra 子 agent；Sol 只读复核 | `f2e6227` | `d1b2d46` | 6 个定向 / 38 个全量测试、typecheck、diff、精确 secret scan 通过 |
-| T05–T09、T11–T18 | 待开始 | - | - | - | - |
+| T05 | 已完成 | Terra 子 agent；Sol 只读复核 | `406a670`、`9672f77`、`aca4df2` | `98ad910`、`63ca017`、`e428e0f` | argv、cwd、进程组 timeout 和空参数门禁通过；以 `4614e27` 合入 |
+| T06 | 已完成 | Terra 子 agent；Sol 只读复核 | `0014ae7`、`348d8d9` | `50f2707`、`fdca130` | unknown action、危险 allow 和 CI 大小写绕过均被红绿修复；以 `d7613f9` 合入 |
+| T07 | 已完成 | Terra 子 agent；Sol 只读复核 | `33815e7`、`3c56342`、`991f35b` | `ebe4b56`、`6c3f5ea`、`ca3017c` | 文件锁、CAS、原子审批、权限和故障注入通过；以 `1e87094` 合入 |
+| T08 | 已完成 | Terra 子 agent；Sol 只读复核 | `0d15fbc`、`5b9c8a5` | `1d4f5de`、`da7e4eb` | JSONL 审计、递归脱敏与恶意输入 fail-closed；以 `101e0b3` 合入 |
+| T09 | 已完成（含反馈子组件复核） | Terra 子 agent；Sol 只读复核 | `ea1e78c`、`74b7d42`、`67589be` | `6913d5c`、`e77a187`、`0f9530d` | 工具/策略/审批/反馈闭环，context-sensitive mock 证明反馈导致改选；以 `3b71e49` 合入 |
+| T11 | 已完成 | Terra 子 agent；Sol 只读复核 | `49d6dea`、`8fadf42`、`5ff36e6` | `3d6d5a6`、`1eb89a9` | YAML strict 与解释器/危险 allow 阻断；以 `4c30e91` 合入 |
+| T12 | 已完成 | Terra 子 agent；Sol 只读复核 | `98af086`、`c41a99f`、`d915510`、`ea15669` | `fe4ddb2`、`f56a0a8`、`23a796b`、`64601a2` | 固定 security 路径、仅 stdin/内存读和 opt-in 临时 Keychain smoke；以 `905bbd1` 合入 |
+| T13 | 已完成 | 主 agent；Sol 只读复核 | `a8103da`、`83ee283` | `a04baf9`、`4115860` | 官方 endpoint 严格钉扎、timeout/error 脱敏、fake fetch；以 `95d5386` 合入 |
+| T14 | 已完成（含最终审查修复） | Terra 子 agent；Sol 只读复核 | `8b700ac`、`006d04c`、`438d154`、`8a4dce0` | `2e34a67`、`f1c7248`、`a88d0e7`、`a728111`、`7afc7ad` | 默认安全 runtime、HITL inspect/approve、脱敏 audit、状态迁移与故障收敛；以 `d8e4508` 合入 |
+| T15 | 已完成 | Terra 子 agent；Sol 只读复核 | `afc8aca` | `2527341` | 三机制离线场景与 stable report；以 `a54ead4` 合入 |
+| T16 | 已完成 | 主 agent | `6852166` | `052d241` | GitHub/GitLab 离线 CI、`npm run check`；测试不读取 Key 或 Provider |
+| T17 | 已完成（待最终 Release 实操） | Terra 子 agent；Sol 只读复核 | `e3323b2`、`895c3ef`、`8329c59` | `9b27750`、`23557aa` | npm pack 白名单与 prepack 离线 check+build；以 `de9a151` 合入 |
+| T18 | 进行中 | 主 agent | - | - | 最终文档同步、全量验证、Release、源码包与同级 submission.jsonc |
