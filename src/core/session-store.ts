@@ -26,8 +26,31 @@ export interface ApprovalRecordStore {
   getApproval(sessionId: string, actionHash: string): Promise<ApprovalRecord | undefined>;
 }
 
+/** A single durable update that binds a session transition to its approval record. */
+export interface ApprovalTransaction {
+  sessionId: string;
+  expectedVersion: number;
+  expectedApproval: ApprovalRecord | undefined;
+  nextSession: SessionState;
+  nextApproval: ApprovalRecord;
+}
+
+export interface ApprovalStateStore extends AtomicSessionStore, ApprovalRecordStore {
+  transaction(change: ApprovalTransaction): Promise<boolean>;
+}
+
+export class ApprovalStorageError extends Error {
+  constructor(
+    readonly kind: 'invalid_state' | 'io_failure',
+    message = '审批状态存储不可用。'
+  ) {
+    super(message);
+    this.name = 'ApprovalStorageError';
+  }
+}
+
 /** A deterministic store for the loop and its offline tests. */
-export class InMemorySessionStore implements AtomicSessionStore, ApprovalRecordStore {
+export class InMemorySessionStore implements ApprovalStateStore {
   private readonly history: SessionState[] = [];
   private readonly current = new Map<string, StoredSession>();
   private readonly approvals = new Map<string, ApprovalRecord>();
@@ -70,6 +93,21 @@ export class InMemorySessionStore implements AtomicSessionStore, ApprovalRecordS
     return record === undefined ? undefined : structuredClone(record);
   }
 
+  async transaction(change: ApprovalTransaction): Promise<boolean> {
+    const current = this.current.get(change.sessionId);
+    if (current === undefined || current.version !== change.expectedVersion || change.nextSession.id !== change.sessionId) {
+      return false;
+    }
+    const key = approvalKey(change.sessionId, change.nextApproval.actionHash);
+    const approval = this.approvals.get(key);
+    if (!approvalEquals(approval, change.expectedApproval)) {
+      return false;
+    }
+    this.write(change.nextSession, change.expectedVersion + 1);
+    this.approvals.set(key, structuredClone(change.nextApproval));
+    return true;
+  }
+
   private write(session: SessionState, version: number): void {
     const snapshot = structuredClone(session);
     this.current.set(snapshot.id, { session: snapshot, version });
@@ -79,4 +117,22 @@ export class InMemorySessionStore implements AtomicSessionStore, ApprovalRecordS
 
 function approvalKey(sessionId: string, actionHash: string): string {
   return `${sessionId}\u0000${actionHash}`;
+}
+
+export function approvalRecordKey(sessionId: string, actionHash: string): string {
+  return approvalKey(sessionId, actionHash);
+}
+
+export function approvalEquals(actual: ApprovalRecord | undefined, expected: ApprovalRecord | undefined): boolean {
+  if (actual === undefined || expected === undefined) {
+    return actual === expected;
+  }
+  return actual.sessionId === expected.sessionId
+    && actual.actionHash === expected.actionHash
+    && actual.createdAt === expected.createdAt
+    && actual.expiresAt === expected.expiresAt
+    && actual.status === expected.status
+    && actual.approvedAt === expected.approvedAt
+    && actual.rejectedAt === expected.rejectedAt
+    && actual.consumedAt === expected.consumedAt;
 }

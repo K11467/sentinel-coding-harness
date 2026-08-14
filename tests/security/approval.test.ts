@@ -241,6 +241,19 @@ describe('ApprovalService', () => {
     expect(await restored.getApproval('session-1', decision.actionHash)).toMatchObject({ status: 'approved' });
   });
 
+  it('does not leave an approval_denied session without a rejected record when an atomic reject rename fails', async () => {
+    const { statePath, policy, decision } = await requestedInFile();
+    const failingStore = new FileSessionStore(statePath, {
+      operations: { rename: async () => { throw new Error('injected rename failure'); } }
+    });
+    const failingService = new ApprovalService(failingStore, policy, { clock: () => now });
+
+    expect(await failingService.reject('session-1', decision.actionHash)).toMatchObject({ ok: false, error: { code: 'storage_failure' } });
+    const restored = new FileSessionStore(statePath);
+    expect((await restored.read('session-1'))?.session).toMatchObject({ status: 'waiting_approval' });
+    expect(await restored.getApproval('session-1', decision.actionHash)).toMatchObject({ status: 'pending' });
+  });
+
   it('fails closed for malformed approval records and at the exact expiry boundary', async () => {
     const clock = { value: now };
     const { statePath, service, policy, decision } = await requestedInFile({ ttlMs: 1, clock: () => clock.value });
