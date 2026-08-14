@@ -1,12 +1,11 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { execFile } from 'node:child_process';
 import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
-const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const repositoryRoot = resolve(__dirname, '../..');
 const fixtureFiles = [
   '.env.t17-fixture',
   't17-fixture.pem',
