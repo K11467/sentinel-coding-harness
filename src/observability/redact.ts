@@ -1,12 +1,20 @@
 const REDACTED = '[REDACTED]';
 const DEFAULT_MAX_BYTES = 4 * 1024;
 const ELLIPSIS = '…';
+const MAX_REDACTION_DEPTH = 12;
+const MAX_REDACTION_ITEMS = 256;
 
-const sensitiveKey = /(?:^|[-_.])(authorization|cookie|set[-_]?cookie|x[-_]?api[-_]?key|api[-_]?key|password|secret|token)(?:$|[-_.])/i;
+const sensitiveField =
+  '(?:authorization|cookie|set[-_]?cookie|x[-_]?api[-_]?key|api[-_]?key|client[-_]?secret|access[-_]?token|secret[-_]?key|private[-_]?key|password|secret|token)';
+const sensitiveKey = new RegExp(`(?:^|[-_.])${sensitiveField}(?:$|[-_.])`, 'i');
 const headerAssignment = /(\b(?:authorization|cookie|set[-_]?cookie)\b"?\s*(?:[:=])\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n,&}]+)/gi;
-const valueAssignment = /(\b(?:x[-_]?api[-_]?key|api[-_]?key|password|secret|token)\b"?\s*(?:[:=])\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,&;}\]]+)/gi;
+const valueAssignment = new RegExp(
+  `(\\b${sensitiveField}\\b"?\\s*(?:[:=])\\s*)(?:"(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'|[^\\s,&;}\\]]+)`,
+  'gi',
+);
 const skToken = /\bsk(?:-|%2d)[a-z0-9._~%/+:-]+\b/gi;
 const pemBlock = /-----BEGIN [^-\r\n]+-----[\s\S]*?-----END [^-\r\n]+-----/g;
+const dangerousKey = new Set(['__proto__', 'constructor', 'prototype']);
 
 function redactAssignmentValue(match: string, prefix: string): string {
   const value = match.slice(prefix.length);
@@ -51,26 +59,93 @@ export function redactText(value: string, maxBytes = DEFAULT_MAX_BYTES): string 
   return truncateUtf8(redacted, maxBytes);
 }
 
+function redactArray(value: unknown[], maxBytes: number, seen: WeakSet<object>, depth: number): unknown[] {
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+  if (!lengthDescriptor || typeof lengthDescriptor.value !== 'number') {
+    return [REDACTED];
+  }
+
+  const result: unknown[] = [];
+  const limit = Math.min(lengthDescriptor.value, MAX_REDACTION_ITEMS);
+  for (let index = 0; index < limit; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (!descriptor) {
+      result.push(undefined);
+    } else if (!('value' in descriptor)) {
+      result.push(REDACTED);
+    } else {
+      result.push(redactValue(descriptor.value, maxBytes, seen, depth + 1));
+    }
+  }
+  if (lengthDescriptor.value > limit) {
+    result.push(REDACTED);
+  }
+  return result;
+}
+
+function redactObject(value: object, maxBytes: number, seen: WeakSet<object>, depth: number): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  const keys = Object.getOwnPropertyNames(value);
+  let itemCount = 0;
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !descriptor.enumerable) {
+      continue;
+    }
+    if (itemCount >= MAX_REDACTION_ITEMS) {
+      Object.defineProperty(result, '[TRUNCATED]', { value: REDACTED, enumerable: true });
+      break;
+    }
+    itemCount += 1;
+
+    const redactedValue =
+      dangerousKey.has(key) || sensitiveKey.test(key) || !('value' in descriptor)
+        ? REDACTED
+        : redactValue(descriptor.value, maxBytes, seen, depth + 1);
+    Object.defineProperty(result, key, { value: redactedValue, enumerable: true, configurable: true, writable: true });
+  }
+  return result;
+}
+
+function redactValue(value: unknown, maxBytes: number, seen: WeakSet<object>, depth: number): unknown {
+  if (typeof value === 'string') {
+    return redactText(value, maxBytes);
+  }
+  if (Array.isArray(value)) {
+    if (depth >= MAX_REDACTION_DEPTH || seen.has(value)) {
+      return REDACTED;
+    }
+    seen.add(value);
+    try {
+      return redactArray(value, maxBytes, seen, depth);
+    } catch {
+      return REDACTED;
+    }
+  }
+  if (value !== null && typeof value === 'object') {
+    if (depth >= MAX_REDACTION_DEPTH || seen.has(value)) {
+      return REDACTED;
+    }
+    seen.add(value);
+    try {
+      return redactObject(value, maxBytes, seen, depth);
+    } catch {
+      return REDACTED;
+    }
+  }
+  return value;
+}
+
 /**
  * Returns a deep, non-mutating redacted copy of a JSON-like value.
  * Values associated with sensitive key names are never retained.
  */
 export function redact(value: unknown, maxBytes = DEFAULT_MAX_BYTES): unknown {
-  if (typeof value === 'string') {
-    return redactText(value, maxBytes);
+  try {
+    return redactValue(value, maxBytes, new WeakSet<object>(), 0);
+  } catch {
+    return REDACTED;
   }
-  if (Array.isArray(value)) {
-    return value.map((item) => redact(item, maxBytes));
-  }
-  if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, nestedValue]) => [
-        key,
-        sensitiveKey.test(key) ? REDACTED : redact(nestedValue, maxBytes),
-      ]),
-    );
-  }
-  return value;
 }
 
-export { DEFAULT_MAX_BYTES, REDACTED };
+export { DEFAULT_MAX_BYTES, MAX_REDACTION_DEPTH, REDACTED };

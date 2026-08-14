@@ -16,6 +16,7 @@ const SESSION_STATUSES = [
 ] as const;
 const POLICY_EFFECTS = ['allow', 'require_approval', 'deny'] as const;
 const RISK_LEVELS = ['low', 'medium', 'high', 'critical'] as const;
+const DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 export type AuditEventType = (typeof EVENT_TYPES)[number];
 
@@ -78,6 +79,12 @@ export interface AuditRecord {
   state?: AuditStateInput;
 }
 
+type PlainRecord = Record<string, unknown>;
+
+function invalidEvent(): never {
+  throw new Error('Invalid audit event.');
+}
+
 function isOneOf<T extends readonly string[]>(value: unknown, values: T): value is T[number] {
   return typeof value === 'string' && (values as readonly string[]).includes(value);
 }
@@ -86,86 +93,203 @@ function nonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 512 && !/[\r\n\0]/.test(value);
 }
 
-function summarizeAction(action: AuditActionInput): AuditActionSummary {
-  if (!isOneOf(action.type, ACTION_TYPES)) {
-    throw new Error('Invalid audit event.');
+/**
+ * Copies only enumerable own data properties from a plain JSON-like record.
+ * Accessors, prototype-bearing instances, symbols, and dangerous keys are not input data.
+ */
+function plainRecord(value: unknown): PlainRecord {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return invalidEvent();
   }
 
-  const summary: AuditActionSummary = { type: redactText(action.type, 128) };
-  if (typeof action.reason === 'string') summary.reason = redactText(action.reason, 512);
-  if (typeof action.path === 'string') summary.path = redactText(action.path, 512);
-  if (typeof action.command === 'string') summary.command = redactText(action.command, 128);
-  if (typeof action.content === 'string') {
-    summary.contentBytes = Buffer.byteLength(action.content, 'utf8');
-  } else if (typeof action.contentBytes === 'number' && Number.isSafeInteger(action.contentBytes) && action.contentBytes >= 0) {
-    summary.contentBytes = action.contentBytes;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    return invalidEvent();
   }
-  return summary;
+
+  const result: PlainRecord = {};
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string' || DANGEROUS_KEYS.has(key)) {
+      return invalidEvent();
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !descriptor.enumerable || !('value' in descriptor)) {
+      return invalidEvent();
+    }
+    Object.defineProperty(result, key, {
+      value: descriptor.value,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return result;
 }
 
-function sanitizePolicy(policy: AuditPolicyInput): AuditPolicyInput {
-  if (!isOneOf(policy.effect, POLICY_EFFECTS) || !isOneOf(policy.risk, RISK_LEVELS) || !nonEmptyString(policy.ruleId)) {
-    throw new Error('Invalid audit event.');
+function exactFields(record: PlainRecord, allowed: readonly string[]): void {
+  if (Object.keys(record).some((key) => !allowed.includes(key))) {
+    invalidEvent();
   }
+}
+
+function requiredString(record: PlainRecord, key: string): string {
+  const value = record[key];
+  if (!nonEmptyString(value)) {
+    return invalidEvent();
+  }
+  return value;
+}
+
+function optionalString(record: PlainRecord, key: string): string | undefined {
+  if (!Object.hasOwn(record, key)) {
+    return undefined;
+  }
+  const value = record[key];
+  if (typeof value !== 'string') {
+    return invalidEvent();
+  }
+  return value;
+}
+
+function optionalRecord(record: PlainRecord, key: string): PlainRecord | undefined {
+  if (!Object.hasOwn(record, key)) {
+    return undefined;
+  }
+  return plainRecord(record[key]);
+}
+
+function optionalSafeInteger(record: PlainRecord, key: string): number | undefined {
+  if (!Object.hasOwn(record, key)) {
+    return undefined;
+  }
+  const value = record[key];
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
+    return invalidEvent();
+  }
+  return value;
+}
+
+function summarizeAction(value: PlainRecord): AuditActionSummary {
+  exactFields(value, ['type', 'reason', 'path', 'command', 'content', 'contentBytes']);
+  const type = requiredString(value, 'type');
+  if (!isOneOf(type, ACTION_TYPES)) {
+    return invalidEvent();
+  }
+  const reason = optionalString(value, 'reason');
+  const path = optionalString(value, 'path');
+  const command = optionalString(value, 'command');
+  const content = optionalString(value, 'content');
+  const contentBytes = optionalSafeInteger(value, 'contentBytes');
+  if (contentBytes !== undefined && contentBytes < 0) {
+    return invalidEvent();
+  }
+
   return {
-    effect: policy.effect,
-    ruleId: redactText(policy.ruleId, 128),
-    risk: policy.risk,
-    ...(typeof policy.reason === 'string' ? { reason: redactText(policy.reason, 512) } : {}),
+    type: redactText(type, 128),
+    ...(reason !== undefined ? { reason: redactText(reason, 512) } : {}),
+    ...(path !== undefined ? { path: redactText(path, 512) } : {}),
+    ...(command !== undefined ? { command: redactText(command, 128) } : {}),
+    ...(content !== undefined ? { contentBytes: Buffer.byteLength(content, 'utf8') } : {}),
+    ...(content === undefined && contentBytes !== undefined ? { contentBytes } : {}),
   };
 }
 
-function sanitizeTool(tool: AuditToolInput): AuditToolInput {
-  if (!isOneOf(tool.kind, ACTION_TYPES) || typeof tool.ok !== 'boolean') {
-    throw new Error('Invalid audit event.');
+function sanitizePolicy(value: PlainRecord): AuditPolicyInput {
+  exactFields(value, ['effect', 'ruleId', 'risk', 'reason']);
+  const effect = requiredString(value, 'effect');
+  const ruleId = requiredString(value, 'ruleId');
+  const risk = requiredString(value, 'risk');
+  const reason = optionalString(value, 'reason');
+  if (!isOneOf(effect, POLICY_EFFECTS) || !isOneOf(risk, RISK_LEVELS)) {
+    return invalidEvent();
   }
   return {
-    kind: redactText(tool.kind, 128),
-    ok: tool.ok,
-    ...(typeof tool.exitCode === 'number' ? { exitCode: tool.exitCode } : {}),
-    ...(typeof tool.errorCode === 'string' ? { errorCode: redactText(tool.errorCode, 128) } : {}),
-    ...(typeof tool.output === 'string' ? { output: redactText(tool.output, 1024) } : {}),
+    effect,
+    ruleId: redactText(ruleId, 128),
+    risk,
+    ...(reason !== undefined ? { reason: redactText(reason, 512) } : {}),
   };
 }
 
-function sanitizeState(state: AuditStateInput): AuditStateInput {
-  if (!isOneOf(state.from, SESSION_STATUSES) || !isOneOf(state.to, SESSION_STATUSES)) {
-    throw new Error('Invalid audit event.');
+function sanitizeTool(value: PlainRecord): AuditToolInput {
+  exactFields(value, ['kind', 'ok', 'exitCode', 'errorCode', 'output']);
+  const kind = requiredString(value, 'kind');
+  const ok = value.ok;
+  const exitCode = optionalSafeInteger(value, 'exitCode');
+  const errorCode = optionalString(value, 'errorCode');
+  const output = optionalString(value, 'output');
+  if (!isOneOf(kind, ACTION_TYPES) || typeof ok !== 'boolean') {
+    return invalidEvent();
   }
   return {
-    from: redactText(state.from, 128),
-    to: redactText(state.to, 128),
-    ...(typeof state.reason === 'string' ? { reason: redactText(state.reason, 512) } : {}),
+    kind: redactText(kind, 128),
+    ok,
+    ...(exitCode !== undefined ? { exitCode } : {}),
+    ...(errorCode !== undefined ? { errorCode: redactText(errorCode, 128) } : {}),
+    ...(output !== undefined ? { output: redactText(output, 1024) } : {}),
   };
 }
 
-function normalizeEvent(event: AuditEventInput): AuditRecord {
-  if (!nonEmptyString(event.sessionId) || !isOneOf(event.event, EVENT_TYPES)) {
-    throw new Error('Invalid audit event.');
+function sanitizeState(value: PlainRecord): AuditStateInput {
+  exactFields(value, ['from', 'to', 'reason']);
+  const from = requiredString(value, 'from');
+  const to = requiredString(value, 'to');
+  const reason = optionalString(value, 'reason');
+  if (!isOneOf(from, SESSION_STATUSES) || !isOneOf(to, SESSION_STATUSES)) {
+    return invalidEvent();
+  }
+  return {
+    from: redactText(from, 128),
+    to: redactText(to, 128),
+    ...(reason !== undefined ? { reason: redactText(reason, 512) } : {}),
+  };
+}
+
+function normalizeEventUnsafe(input: unknown): AuditRecord {
+  const event = plainRecord(input);
+  exactFields(event, ['sessionId', 'event', 'timestamp', 'action', 'policy', 'tool', 'state']);
+  const sessionId = requiredString(event, 'sessionId');
+  const eventType = requiredString(event, 'event');
+  const timestamp = optionalString(event, 'timestamp');
+  const action = optionalRecord(event, 'action');
+  const policy = optionalRecord(event, 'policy');
+  const tool = optionalRecord(event, 'tool');
+  const state = optionalRecord(event, 'state');
+  if (!isOneOf(eventType, EVENT_TYPES)) {
+    return invalidEvent();
   }
   if (
-    event.timestamp !== undefined &&
-    (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(event.timestamp) || Number.isNaN(Date.parse(event.timestamp)))
+    timestamp !== undefined &&
+    (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(timestamp) || Number.isNaN(Date.parse(timestamp)))
   ) {
-    throw new Error('Invalid audit event.');
+    return invalidEvent();
   }
 
   return {
-    timestamp: event.timestamp ? new Date(event.timestamp).toISOString() : new Date().toISOString(),
-    sessionId: redactText(event.sessionId, 128),
-    event: event.event,
-    ...(event.action ? { action: summarizeAction(event.action) } : {}),
-    ...(event.policy ? { policy: sanitizePolicy(event.policy) } : {}),
-    ...(event.tool ? { tool: sanitizeTool(event.tool) } : {}),
-    ...(event.state ? { state: sanitizeState(event.state) } : {}),
+    timestamp: timestamp ? new Date(timestamp).toISOString() : new Date().toISOString(),
+    sessionId: redactText(sessionId, 128),
+    event: eventType,
+    ...(action ? { action: summarizeAction(action) } : {}),
+    ...(policy ? { policy: sanitizePolicy(policy) } : {}),
+    ...(tool ? { tool: sanitizeTool(tool) } : {}),
+    ...(state ? { state: sanitizeState(state) } : {}),
   };
+}
+
+function normalizeEvent(input: unknown): AuditRecord {
+  try {
+    return normalizeEventUnsafe(input);
+  } catch {
+    return invalidEvent();
+  }
 }
 
 /** Append-only JSONL audit storage. It deliberately exposes no arbitrary payload field. */
 export class AuditLog {
   public constructor(private readonly filePath: string) {}
 
-  public async append(event: AuditEventInput): Promise<AuditRecord> {
+  /** Runtime input is unknown until it has passed plain-record validation. */
+  public async append(event: unknown): Promise<AuditRecord> {
     const record = normalizeEvent(event);
     try {
       await appendFile(this.filePath, `${JSON.stringify(record)}\n`, { encoding: 'utf8', flag: 'a' });
@@ -181,7 +305,7 @@ export class AuditLog {
       return contents
         .split('\n')
         .filter((line) => line.length > 0)
-        .map((line) => normalizeEvent(JSON.parse(line) as AuditEventInput));
+        .map((line) => normalizeEvent(JSON.parse(line)));
     } catch {
       throw new Error('Unable to read audit log.');
     }
