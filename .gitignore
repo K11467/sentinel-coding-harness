@@ -1,0 +1,24 @@
+# Dependencies and build products
+node_modules/
+dist/
+coverage/
+.vite/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+.secrets/
+
+# Runtime state; credentials are stored in macOS Keychain, never here
+.sentinel/
+data/
+*.log
+
+# Editor and operating-system files
+.DS_Store
+.idea/
+.vscode/
