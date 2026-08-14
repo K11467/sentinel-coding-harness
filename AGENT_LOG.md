@@ -12,3 +12,4 @@
 | 2026-08-14 17:49 | P01 | GitHub 连通性修复 | SSH 在当前网络的 banner 阶段超时；已将本仓库 remote 切换为 HTTPS，并通过已登录的 GitHub CLI credential helper 推送。 | 教训：发布前应验证远程传输协议；不在终端或日志显示 Token。 |
 | 2026-08-14 18:31 | P02 | Cursor 冷启动验证 | Cursor Agent 在独立目录、仅依据 SPEC/PLAN 尝试 T01；它发现任务依赖、schema contract 和脚手架顺序的七组问题，并在其目录遇到 npm 证书校验失败后停止。检查确认本仓库没有 Cursor 写入。 | 采纳问题为 SPEC 缺陷，不把它视为 agent 失败；修订前不得开始实现。 |
 | 2026-08-14 18:31 | P03 | OpenAI Docs / 协调策略 | 人类希望 Luna 执行、Sol 协调。官方模型定位支持这一分工；当前协作运行时只公开 Sol/Terra 子 agent override，未公开 Luna。 | 教训：记录并如实报告运行时模型限制，不能把 Terra 或 Sol 伪称为 Luna。 |
+| 2026-08-14 18:31 | P03 | 规约修订提交 | 创建 `59f1152`：`docs(P03): 根据 Cursor 冷启动修订执行契约`，解决 T00 顺序、action/config/session contract、命令语法和 TLS 处理边界。 | 下一步必须由人类复核，并让隔离的 Cursor 复测，不能直接进入代码实现。 |
