@@ -10,36 +10,24 @@ export interface ControlledTestResult {
 
 export type SummarizedFeedback = Pick<FeedbackSummary, 'category' | 'summary'>;
 
-export const MAX_FEEDBACK_INPUT_CHARS = 4 * 1024;
-export const MAX_FEEDBACK_SUMMARY_CHARS = 512;
+export const MAX_FEEDBACK_INPUT_BYTES = 4 * 1024;
 
 const typeErrorPattern = /\b(?:error\s+TS\d+|TypeError)\b/i;
 const assertionFailurePattern = /\b(?:AssertionError|assertion failed)\b/i;
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 
 /**
  * Converts a captured, already-controlled test command result into a small,
- * safe feedback item. It never executes a command or retains its raw output.
+ * safe feedback item. Captured output is used only for local classification;
+ * no stdout or stderr text is copied into the returned summary.
  */
 export class FeedbackSummarizer {
   summarize(result: ControlledTestResult): SummarizedFeedback {
     const category = this.categorize(result);
-    if (category === 'passed') {
-      return { category, summary: '测试通过。' };
-    }
-
-    const details = compact(this.safeOutput(result));
-    if (details.length === 0) {
-      return {
-        category,
-        summary: category === 'timeout'
-          ? '测试超时。'
-          : `命令失败（退出码 ${result.exitCode}）。`
-      };
-    }
-
     return {
       category,
-      summary: limit(`${summaryPrefix(category)}${details}`, MAX_FEEDBACK_SUMMARY_CHARS)
+      summary: `${summaryPrefix(category)}（退出码 ${result.exitCode}）。`
     };
   }
 
@@ -51,7 +39,7 @@ export class FeedbackSummarizer {
       return 'passed';
     }
 
-    const output = this.safeOutput(result);
+    const output = this.classificationOutput(result);
     if (typeErrorPattern.test(output)) {
       return 'type_error';
     }
@@ -61,34 +49,26 @@ export class FeedbackSummarizer {
     return 'command_error';
   }
 
-  private safeOutput(result: ControlledTestResult): string {
-    return redact(`${result.stdout ?? ''}\n${result.stderr ?? ''}`.slice(0, MAX_FEEDBACK_INPUT_CHARS));
+  private classificationOutput(result: ControlledTestResult): string {
+    const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+    const bytes = encoder.encode(output);
+    return bytes.byteLength <= MAX_FEEDBACK_INPUT_BYTES
+      ? output
+      : decoder.decode(bytes.subarray(0, MAX_FEEDBACK_INPUT_BYTES));
   }
 }
 
-function redact(text: string): string {
-  return text
-    .replace(/(Authorization\s*:\s*Bearer\s+)[^\s,;]+/gi, '$1[REDACTED]')
-    .replace(/\bsk-[A-Za-z0-9_-]+\b/g, '[REDACTED]');
-}
-
-function compact(text: string): string {
-  return text.replace(/\s+/g, ' ').trim();
-}
-
-function limit(text: string, maximum: number): string {
-  return text.length <= maximum ? text : `${text.slice(0, maximum - 1)}…`;
-}
-
-function summaryPrefix(category: Exclude<FeedbackSummary['category'], 'passed'>): string {
+function summaryPrefix(category: FeedbackSummary['category']): string {
   switch (category) {
+    case 'passed':
+      return '测试通过';
     case 'assertion_failed':
-      return '断言失败：';
+      return '断言失败';
     case 'type_error':
-      return '类型错误：';
+      return '类型错误';
     case 'command_error':
-      return '命令失败：';
+      return '命令失败';
     case 'timeout':
-      return '测试超时：';
+      return '测试超时';
   }
 }

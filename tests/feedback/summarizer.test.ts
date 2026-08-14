@@ -1,8 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   FeedbackSummarizer,
-  MAX_FEEDBACK_INPUT_CHARS,
-  MAX_FEEDBACK_SUMMARY_CHARS,
+  MAX_FEEDBACK_INPUT_BYTES,
   type ControlledTestResult
 } from '../../src/feedback/summarizer.js';
 
@@ -28,18 +27,17 @@ describe('FeedbackSummarizer', () => {
     expect(summarize({ exitCode: 0, stderr: 'AssertionError: stale diagnostic' }).category).toBe('passed');
   });
 
-  test('先截断最多 4KiB 输入，且摘要保持简短', () => {
+  test('先截断最多 4KiB 输入，且摘要只包含确定性结果', () => {
     const visible = 'AssertionError: expected one value\n';
     const hiddenTail = 'tail-must-not-appear';
     const result = summarize({
       exitCode: 1,
-      stderr: visible + 'x'.repeat(MAX_FEEDBACK_INPUT_CHARS) + hiddenTail
+      stderr: visible + 'x'.repeat(MAX_FEEDBACK_INPUT_BYTES) + hiddenTail
     });
 
     expect(result.category).toBe('assertion_failed');
-    expect(result.summary).toContain('AssertionError');
+    expect(result.summary).toBe('断言失败（退出码 1）。');
     expect(result.summary).not.toContain(hiddenTail);
-    expect(result.summary.length).toBeLessThanOrEqual(MAX_FEEDBACK_SUMMARY_CHARS);
   });
 
   test('摘要脱敏 Authorization Bearer 与 sk 形式密钥', () => {
@@ -49,13 +47,13 @@ describe('FeedbackSummarizer', () => {
       stderr: `Authorization: Bearer very-secret-token\nrequest failed with ${apiKey}`
     });
 
-    expect(result.summary).toContain('[REDACTED]');
+    expect(result.summary).toBe('命令失败（退出码 1）。');
     expect(result.summary).not.toContain('very-secret-token');
     expect(result.summary).not.toContain(apiKey);
   });
 
   test('空输出给出稳定且可操作的摘要', () => {
-    expect(summarize({ exitCode: 0 })).toEqual({ category: 'passed', summary: '测试通过。' });
+    expect(summarize({ exitCode: 0 })).toEqual({ category: 'passed', summary: '测试通过（退出码 0）。' });
     expect(summarize({ exitCode: 1 })).toEqual({ category: 'command_error', summary: '命令失败（退出码 1）。' });
   });
 
@@ -90,7 +88,7 @@ describe('FeedbackSummarizer', () => {
     const secret = 'cross-boundary-secret-should-not-leak';
     const result = summarize({
       exitCode: 1,
-      stderr: `${'x'.repeat(480)}Authorization: Basic ${secret}${'y'.repeat(MAX_FEEDBACK_INPUT_CHARS)}`
+      stderr: `${'x'.repeat(480)}Authorization: Basic ${secret}${'y'.repeat(MAX_FEEDBACK_INPUT_BYTES)}`
     });
 
     expect(result.summary).not.toContain(secret);
