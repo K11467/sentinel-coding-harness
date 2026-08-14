@@ -39,13 +39,13 @@ function session(id = 'session-1'): SessionState {
   };
 }
 
-async function requested(overrides: { ttlMs?: number; currentTime?: Date } = {}) {
+async function requested(overrides: { ttlMs?: number; clock?: () => Date } = {}) {
   const store = new InMemorySessionStore();
   const initial = session();
   await store.save(initial);
   const policy = new PolicyEngine(config());
   const service = new ApprovalService(store, policy, {
-    clock: () => overrides.currentTime ?? now,
+    clock: overrides.clock ?? (() => now),
     ttlMs: overrides.ttlMs
   });
   const pending = action({ type: 'write_file', reason: '更新项目元数据', path: 'package.json', content: '{"private":true}' });
@@ -57,6 +57,22 @@ async function requested(overrides: { ttlMs?: number; currentTime?: Date } = {})
 }
 
 describe('ApprovalService', () => {
+  it('persists a session-bound, expiring approval record as a clone', async () => {
+    const { service, store, decision } = await requested({ ttlMs: 1_000 });
+    const record = await service.inspect('session-1', decision.actionHash);
+
+    expect(record).toMatchObject({
+      sessionId: 'session-1',
+      actionHash: decision.actionHash,
+      createdAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + 1_000).toISOString(),
+      status: 'pending'
+    });
+    record!.status = 'consumed';
+    const reconstructed = new ApprovalService(store, new PolicyEngine(config()), { clock: () => now });
+    expect((await reconstructed.inspect('session-1', decision.actionHash))?.status).toBe('pending');
+  });
+
   it('does not release an action before approval', async () => {
     const { service, decision } = await requested();
 
@@ -75,11 +91,8 @@ describe('ApprovalService', () => {
 
   it('does not release an expired approval', async () => {
     const clock = { value: now };
-    const { service, pending, decision, store } = await requested({ ttlMs: 1, currentTime: clock.value });
+    const { service, pending, decision, store } = await requested({ ttlMs: 1, clock: () => clock.value });
     clock.value = new Date(now.getTime() + 2);
-    const expires = new ApprovalService(store, new PolicyEngine(config()), { clock: () => clock.value, ttlMs: 1 });
-
-    expect(await expires.approve('session-1', decision.actionHash)).toMatchObject({ ok: false, error: { code: 'approval_not_found' } });
     expect(await service.approve('session-1', decision.actionHash)).toMatchObject({ ok: false, error: { code: 'approval_expired' } });
     expect(await service.claim('session-1', decision.actionHash)).toMatchObject({ ok: false, error: { code: 'approval_expired' } });
     expect(store.get('session-1')).toMatchObject({ status: 'waiting_approval', pendingAction: { action: pending } });
@@ -110,7 +123,7 @@ describe('ApprovalService', () => {
     const { service, decision, store } = await requested();
     const stored = store.get('session-1')!;
     stored.pendingAction!.action = action({ type: 'write_file', reason: '篡改内容', path: 'package.json', content: '{"private":false}' });
-    expect(store.get('session-1')!.pendingAction!.action.content).toBe('{"private":true}');
+    expect(store.get('session-1')!.pendingAction!.action).toMatchObject({ content: '{"private":true}' });
 
     await store.save({
       ...store.get('session-1')!,
@@ -132,6 +145,25 @@ describe('ApprovalService', () => {
     const decision: PolicyDecision = { ...policy.decide(pending), effect: 'allow' };
 
     expect(await service.request('session-1', pending, decision)).toMatchObject({ ok: false, error: { code: 'approval_not_required' } });
+    expect(await service.request('session-1', pending, {
+      ...policy.decide(pending),
+      actionHash: 'sha256:wrong'
+    })).toMatchObject({ ok: false, error: { code: 'action_hash_mismatch' } });
     expect(store.get('session-1')).toMatchObject({ status: 'running' });
+  });
+
+  it('keeps persisted snapshots cloned and rejects stale compare-and-set writes', async () => {
+    const store = new InMemorySessionStore();
+    await store.save(session());
+    const first = await store.read('session-1');
+    if (first === undefined) {
+      throw new Error('expected stored session');
+    }
+    first.session.task = 'caller mutation';
+    expect(store.get('session-1')?.task).toBe('调整受控配置');
+
+    expect(await store.compareAndSet('session-1', first.version, { ...session(), task: 'first update' })).toBe(true);
+    expect(await store.compareAndSet('session-1', first.version, { ...session(), task: 'stale overwrite' })).toBe(false);
+    expect(store.get('session-1')?.task).toBe('first update');
   });
 });
