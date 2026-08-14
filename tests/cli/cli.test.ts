@@ -1,8 +1,9 @@
 import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, test } from 'vitest';
-import { EXIT, runCli, type CliDependencies } from '../../src/cli.js';
+import { afterEach, describe, expect, test, vi } from 'vitest';
+import { EXIT, runCli, type CliDependencies, type CliRuntime } from '../../src/cli.js';
+import type { SessionState } from '../../src/domain/session.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -27,6 +28,18 @@ function invoke(argv: string[], dependencies: Partial<CliDependencies> = {}) {
       writeStderr: (line) => stderr.push(line),
       ...dependencies,
     }),
+  };
+}
+
+function session(id = 'session-1'): SessionState {
+  return {
+    id,
+    status: 'completed',
+    step: 1,
+    task: 'safe test task',
+    stopReason: 'finished',
+    recentActions: [],
+    recentFeedback: [],
   };
 }
 
@@ -125,5 +138,114 @@ describe('CLI credentials commands', () => {
     expect(result.stdout).toEqual([]);
     expect(result.stderr.join('\n')).not.toContain(storedValue);
     expect(result.stderr.join('\n')).toContain('[REDACTED]');
+  });
+});
+
+describe('CLI session commands and offline demo', () => {
+  test('run without a configured credential gives actionable guidance before a provider runtime is called', async () => {
+    const cwd = await workspace();
+    await writeConfig(cwd);
+    let runs = 0;
+    const result = invoke(['run', 'add', 'a', 'test'], {
+      cwd,
+      credentials: {
+        status: async () => ({ exists: false }),
+        set: async () => undefined,
+        clear: async () => undefined,
+      },
+      runtime: {
+        run: async () => {
+          runs += 1;
+          return session();
+        },
+        resume: async () => session(),
+        approve: async () => session(),
+        reject: async () => session(),
+        demo: async () => session('demo'),
+      },
+    });
+
+    await expect(result.code).resolves.toBe(EXIT.UNAVAILABLE);
+    expect(runs).toBe(0);
+    expect(result.stdout).toEqual([]);
+    expect(result.stderr.join('\n')).toContain('credentials set');
+  });
+
+  test('run loads YAML and forwards the task only to an injected runtime after credential status succeeds', async () => {
+    const cwd = await workspace();
+    await writeConfig(cwd);
+    const calls: string[] = [];
+    const runtime: CliRuntime = {
+      run: async ({ task, config }) => {
+        calls.push(`${task}|${config.workspaceRoot}`);
+        return session('run-1');
+      },
+      resume: async () => session(),
+      approve: async () => session(),
+      reject: async () => session(),
+      demo: async () => session('demo'),
+    };
+    const result = invoke(['run', 'fix', 'the', 'test'], {
+      cwd,
+      runtime,
+      credentials: {
+        status: async () => ({ exists: true }),
+        set: async () => undefined,
+        clear: async () => undefined,
+      },
+    });
+
+    await expect(result.code).resolves.toBe(EXIT.OK);
+    expect(calls).toEqual([`fix the test|${cwd}`]);
+    expect(result.stdout).toEqual([expect.stringContaining('run-1')]);
+    expect(result.stderr).toEqual([]);
+  });
+
+  test.each([
+    ['resume', ['resume', 'session-r'], 'resume'],
+    ['approve', ['approve', 'session-a', 'sha256:expected'], 'approve'],
+    ['reject', ['reject', 'session-d', 'sha256:expected'], 'reject'],
+  ] as const)('%s forwards only validated identifiers to the injected runtime', async (_name, argv, method) => {
+    const cwd = await workspace();
+    await writeConfig(cwd);
+    const calls: string[] = [];
+    const runtime: CliRuntime = {
+      run: async () => session(),
+      resume: async ({ sessionId }) => {
+        calls.push(`resume:${sessionId}`);
+        return session(sessionId);
+      },
+      approve: async ({ sessionId, actionHash }) => {
+        calls.push(`approve:${sessionId}:${actionHash}`);
+        return session(sessionId);
+      },
+      reject: async ({ sessionId, actionHash }) => {
+        calls.push(`reject:${sessionId}:${actionHash}`);
+        return session(sessionId);
+      },
+      demo: async () => session('demo'),
+    };
+    const result = invoke([...argv], { cwd, runtime });
+
+    await expect(result.code).resolves.toBe(EXIT.OK);
+    expect(calls).toEqual(method === 'resume'
+      ? ['resume:session-r']
+      : [`${method}:${argv[1]}:${argv[2]}`]);
+    expect(result.stderr).toEqual([]);
+  });
+
+  test('demo uses the built-in scripted mock without calling fetch', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    try {
+      const result = invoke(['demo']);
+
+      await expect(result.code).resolves.toBe(EXIT.OK);
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(result.stdout).toEqual([expect.stringContaining('demo-session')]);
+      expect(result.stderr).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
