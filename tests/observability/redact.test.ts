@@ -19,6 +19,7 @@ describe('统一脱敏', () => {
     'secret: whispered',
     'token=abc123',
     'plain sk-proj-abcdefghijklmnopqrstuvwxyz0123456789',
+    'short sk-safe',
     'encoded=sk%2Dproj%2Dabcdefghijklmnopqrstuvwxyz0123456789',
     '-----BEGIN PRIVATE KEY-----\nprivate-material\n-----END PRIVATE KEY-----',
   ])('隐藏敏感文本：%s', (input) => {
@@ -48,8 +49,12 @@ describe('统一脱敏', () => {
     expect(input.nested[0]?.password).toBe('do-not-log');
   });
 
+  test('完整隐藏 JSON Authorization header 的值', () => {
+    expect(redactText('{"Authorization":"Bearer sk-json-secret"}')).toBe('{"Authorization":"[REDACTED]"}');
+  });
+
   test('以 UTF-8 字节数安全截断多字节内容', () => {
-    const result = truncateUtf8('你好世界', 7);
+    const result = truncateUtf8('你好世界', 9);
 
     expect(result).toBe('你好…');
     expect(Buffer.byteLength(result, 'utf8')).toBeLessThanOrEqual(9);
