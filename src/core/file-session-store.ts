@@ -40,6 +40,7 @@ type PersistedState = z.infer<typeof persistedStateSchema>;
 export interface FileSessionStoreOperations {
   readText(path: string): Promise<string>;
   ensureDirectory(path: string): Promise<void>;
+  createLock(path: string): Promise<void>;
   writeNewText(path: string, contents: string): Promise<void>;
   chmod(path: string, mode: number): Promise<void>;
   rename(from: string, to: string): Promise<void>;
@@ -53,6 +54,7 @@ export interface FileSessionStoreOptions {
 const defaultOperations: FileSessionStoreOperations = {
   readText: async (path) => readFile(path, 'utf8'),
   ensureDirectory: async (path) => { await mkdir(path, { recursive: true, mode: 0o700 }); },
+  createLock: async (path) => writeFile(path, '', { encoding: 'utf8', mode: 0o600, flag: 'wx' }),
   writeNewText: async (path, contents) => writeFile(path, contents, { encoding: 'utf8', mode: 0o600, flag: 'wx' }),
   chmod: async (path, mode) => chmod(path, mode),
   rename: async (from, to) => rename(from, to),
@@ -191,13 +193,44 @@ export class FileSessionStore implements ApprovalStateStore {
     this.queue = new Promise<void>((resolve) => { release = resolve; });
     await previous;
     try {
-      return await operation();
+      return await this.withFileLock(operation);
     } finally {
       release!();
+    }
+  }
+
+  private async withFileLock<T>(operation: () => Promise<T>): Promise<T> {
+    const directory = dirname(this.filePath);
+    const lockPath = `${this.filePath}.lock`;
+    const deadline = Date.now() + 1_000;
+    await this.operations.ensureDirectory(directory);
+    while (true) {
+      try {
+        await this.operations.createLock(lockPath);
+        break;
+      } catch (error) {
+        if (!isAlreadyExists(error) || Date.now() >= deadline) {
+          throw new ApprovalStorageError('io_failure', '无法获取审批状态文件锁。');
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 5));
+      }
+    }
+    try {
+      return await operation();
+    } finally {
+      try {
+        await this.operations.remove(lockPath);
+      } catch {
+        throw new ApprovalStorageError('io_failure', '无法释放审批状态文件锁。');
+      }
     }
   }
 }
 
 function isNotFound(error: unknown): error is { code: string } {
   return typeof error === 'object' && error !== null && 'code' in error && (error as { code?: unknown }).code === 'ENOENT';
+}
+
+function isAlreadyExists(error: unknown): error is { code: string } {
+  return typeof error === 'object' && error !== null && 'code' in error && (error as { code?: unknown }).code === 'EEXIST';
 }
