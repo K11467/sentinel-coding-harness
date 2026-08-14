@@ -172,7 +172,9 @@ describe('MacOSKeychain', () => {
       const keychain = new MacOSKeychain({ platform: 'darwin', identity });
       await keychain.set(secret);
       await expect(keychain.status()).resolves.toEqual({ exists: true });
-      await expect(keychain.get()).resolves.toBe(secret);
+      // Do not let a future mismatch make the generated dummy value appear in
+      // Vitest's failure diff. The value is compared only in process memory.
+      expect((await keychain.get()) === secret).toBe(true);
       await expect(keychain.clear()).resolves.toBeUndefined();
       await expect(keychain.status()).resolves.toEqual({ exists: false });
     } finally {
