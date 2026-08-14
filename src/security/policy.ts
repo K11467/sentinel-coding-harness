@@ -17,6 +17,9 @@ export interface PolicyDecision {
 const networkCommands = new Set([
   'curl', 'wget', 'ssh', 'scp', 'sftp', 'ftp', 'nc', 'ncat', 'telnet'
 ]);
+const knownActionTypes = new Set<ActionType>([
+  'list_files', 'read_file', 'write_file', 'run_command', 'run_tests', 'remember', 'finish'
+]);
 const sourceExtensions = new Set([
   '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts', '.py', '.go', '.rs', '.java', '.c', '.cc', '.cpp', '.h', '.hpp', '.cs', '.rb', '.php', '.swift', '.kt', '.kts', '.vue', '.svelte', '.css', '.scss', '.html'
 ]);
@@ -26,7 +29,7 @@ type CommandAction = Extract<Action, { type: 'run_command' }>;
 
 function canonicalize(value: unknown): string {
   if (value === null || typeof value !== 'object') {
-    return JSON.stringify(value);
+    return JSON.stringify(value) ?? JSON.stringify(String(value));
   }
   if (Array.isArray(value)) {
     return `[${value.map(canonicalize).join(',')}]`;
@@ -36,8 +39,43 @@ function canonicalize(value: unknown): string {
 }
 
 /** A stable digest binds an approval to all action fields without exposing them in a decision. */
-export function hashAction(action: Action): string {
+export function hashAction(action: unknown): string {
   return `sha256:${createHash('sha256').update(canonicalize(action), 'utf8').digest('hex')}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+function isVerifiedActionShape(value: unknown): value is Action {
+  if (!isRecord(value) || !isNonEmptyString(value.id) || !isNonEmptyString(value.reason) || typeof value.type !== 'string' || !knownActionTypes.has(value.type as ActionType)) {
+    return false;
+  }
+  switch (value.type) {
+    case 'list_files':
+      return value.path === undefined || isNonEmptyString(value.path);
+    case 'read_file':
+      return isNonEmptyString(value.path);
+    case 'write_file':
+      return isNonEmptyString(value.path) && typeof value.content === 'string';
+    case 'run_command':
+      return isNonEmptyString(value.command) && isStringArray(value.args);
+    case 'run_tests':
+      return true;
+    case 'remember':
+      return isNonEmptyString(value.note);
+    case 'finish':
+      return isNonEmptyString(value.summary);
+  }
+  return false;
 }
 
 function isPathAction(action: Action): action is PathAction {
@@ -109,17 +147,17 @@ function isDatabaseDestruction(action: CommandAction): boolean {
 }
 
 function isCiOrReleasePath(path: string): boolean {
-  const segments = normalizedSegments(path);
-  const name = segments.at(-1)?.toLowerCase() ?? '';
-  return segments[0] === '.github'
-    || segments[0] === '.circleci'
+  const segments = normalizedSegments(path).map((segment) => segment.toLowerCase());
+  const name = segments.at(-1) ?? '';
+  return segments.includes('.github')
+    || segments.includes('.circleci')
     || name === '.gitlab-ci.yml'
     || name === 'jenkinsfile'
     || name === 'azure-pipelines.yml'
     || name === '.releaserc'
     || name === '.npmrc'
     || name.startsWith('release.config.')
-    || (segments[0] === 'scripts' && /^release[._-]/.test(name));
+    || (segments.includes('scripts') && /^release[._-]/.test(name));
 }
 
 function isSourcePath(path: string): boolean {
@@ -149,15 +187,50 @@ function matchesRule(action: Action, rule: PolicyRule): boolean {
   return true;
 }
 
+type MandatoryApproval = { ruleId: string; reason: string };
+
+function mandatoryApproval(action: Action): MandatoryApproval | undefined {
+  if (action.type === 'write_file' && isCiOrReleasePath(action.path)) {
+    return { ruleId: 'approval.ci-release-config', reason: 'CI 或发布配置修改需要人工确认。' };
+  }
+  if (!isCommandAction(action)) {
+    return undefined;
+  }
+
+  const command = commandName(action.command);
+  if (command === 'rm') {
+    return { ruleId: 'approval.delete-command', reason: '删除命令需要人工确认。' };
+  }
+  if (['npm', 'pnpm', 'yarn', 'bun'].includes(command) && ['install', 'i', 'add', 'update', 'ci'].includes(action.args[0] ?? '')) {
+    return { ruleId: 'approval.dependency-install', reason: '依赖安装或更新需要人工确认。' };
+  }
+  if (networkCommands.has(command)) {
+    return { ruleId: 'approval.network-command', reason: '可能访问网络的命令需要人工确认。' };
+  }
+  if (command === 'git') {
+    return { ruleId: 'approval.git-command', reason: 'Git 操作需要人工确认。' };
+  }
+  return undefined;
+}
+
 /**
- * Deterministic action policy.  Precedence is fixed: irrevocable denies,
- * first matching configured policy rule, command allowlist, then safe defaults.
+ * Deterministic action policy. Precedence is fixed: action-shape deny, hard
+ * deny, mandatory approval, configured policy/allowlist, then safe defaults.
  */
 export class PolicyEngine {
   constructor(private readonly config: HarnessConfig) {}
 
   decide(action: Action): PolicyDecision {
     const actionHash = hashAction(action);
+    if (!isVerifiedActionShape(action)) {
+      return {
+        effect: 'deny',
+        ruleId: 'deny.unknown-action',
+        risk: 'critical',
+        reason: '动作类型或结构未通过策略输入校验。',
+        actionHash
+      };
+    }
     const decide = (effect: PolicyEffect, ruleId: string, risk: PolicyRisk, reason: string): PolicyDecision => ({
       effect,
       ruleId,
@@ -185,6 +258,11 @@ export class PolicyEngine {
       return decide('deny', 'deny.database-destruction', 'critical', '破坏性数据库命令不可执行。');
     }
 
+    const mandatory = mandatoryApproval(action);
+    if (mandatory !== undefined) {
+      return decide('require_approval', mandatory.ruleId, 'high', mandatory.reason);
+    }
+
     const configuredRule = this.config.policyRules.find((rule) => matchesRule(action, rule));
     if (configuredRule !== undefined) {
       return decide(configuredRule.effect, configuredRule.id, configuredRule.risk, '命中显式配置策略。');
@@ -210,9 +288,6 @@ export class PolicyEngine {
       return decide('allow', 'allow.finish', 'low', '结束动作不访问工作区或外部资源。');
     }
     if (action.type === 'write_file') {
-      if (isCiOrReleasePath(action.path)) {
-        return decide('require_approval', 'approval.ci-release-config', 'high', 'CI 或发布配置修改需要人工确认。');
-      }
       if (isSourcePath(action.path)) {
         return decide('allow', 'allow.source-write', 'low', '普通源文件写入可执行。');
       }
@@ -225,18 +300,6 @@ export class PolicyEngine {
     }
     if (command === 'npm' && action.args[0] === 'run' && action.args[1] === 'lint') {
       return decide('allow', 'allow.npm-run-lint', 'low', '受控 npm lint 命令可执行。');
-    }
-    if (command === 'rm') {
-      return decide('require_approval', 'approval.delete-command', 'high', '删除命令需要人工确认。');
-    }
-    if (['npm', 'pnpm', 'yarn', 'bun'].includes(command) && ['install', 'i', 'add', 'update', 'ci'].includes(action.args[0] ?? '')) {
-      return decide('require_approval', 'approval.dependency-install', 'high', '依赖安装或更新需要人工确认。');
-    }
-    if (networkCommands.has(command) || (command === 'git' && ['clone', 'fetch', 'pull', 'remote'].includes(action.args[0] ?? ''))) {
-      return decide('require_approval', 'approval.network-command', 'high', '可能访问网络的命令需要人工确认。');
-    }
-    if (command === 'git') {
-      return decide('require_approval', 'approval.git-command', 'high', 'Git 状态变更需要人工确认。');
     }
     return decide('require_approval', 'approval.unknown-command', 'high', '未识别命令需要人工确认。');
   }
