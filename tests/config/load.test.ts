@@ -33,7 +33,7 @@ describe('loadHarnessConfig', () => {
     const cwd = await workspace();
     await yaml(cwd, 'testCommand:\n  command: npm\n  args: [test]\n');
 
-    await expect(loadHarnessConfig({ cwd })).resolves.toEqual({
+    expect(loadHarnessConfig({ cwd })).toEqual({
       workspaceRoot: cwd,
       model: 'gpt-5.4-mini',
       maxSteps: 6,
@@ -49,7 +49,7 @@ describe('loadHarnessConfig', () => {
     const project = await workspace();
     const configPath = await yaml(project, 'workspaceRoot: .\ntestCommand: { command: npm, args: [test] }\n');
 
-    await expect(loadHarnessConfig({ cwd, configPath })).resolves.toMatchObject({ workspaceRoot: cwd });
+    expect(loadHarnessConfig({ cwd, configPath })).toMatchObject({ workspaceRoot: cwd });
   });
 
   test.each([
@@ -93,10 +93,10 @@ describe('loadHarnessConfig', () => {
   });
 
   test('loads the committed example without allowing model-provided test commands', async () => {
-    await expect(loadHarnessConfig({
+    expect(loadHarnessConfig({
       cwd: process.cwd(),
       configPath: join(process.cwd(), 'examples', 'harness.yaml')
-    })).resolves.toMatchObject({
+    })).toMatchObject({
       testCommand: { command: 'npm', args: ['test'] }
     });
   });
