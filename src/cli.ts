@@ -320,3 +320,17 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
     return EXIT.FAILURE;
   }
 }
+
+/** Process entrypoint used by the compiled `sentinel` bin; imports remain side-effect free. */
+export async function main(argv = process.argv.slice(2)): Promise<number> {
+  return runCli(argv);
+}
+
+if (require.main === module) {
+  void main().then((exitCode) => {
+    process.exitCode = exitCode;
+  }).catch((error: unknown) => {
+    process.stderr.write(`${safeErrorMessage(error)}\n`);
+    process.exitCode = EXIT.FAILURE;
+  });
+}
