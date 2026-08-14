@@ -101,7 +101,7 @@ describe('loadHarnessConfig', () => {
 
   test.each(interpreterPayloads)('rejects interpreter payload from testCommand without creating executable config: $name', async ({ command, args }) => {
     const cwd = await workspace();
-    await yaml(cwd, `testCommand: { command: ${command}, args: [${args.map(JSON.stringify).join(', ')}] }\n`);
+    await yaml(cwd, `testCommand: { command: ${command}, args: [${args.map((arg) => JSON.stringify(arg)).join(', ')}] }\n`);
 
     expect(() => loadHarnessConfig({ cwd })).toThrow(/testCommand|危险|配置无效/);
   });
@@ -112,7 +112,7 @@ describe('loadHarnessConfig', () => {
       'testCommand: { command: npm, args: [test] }',
       'allowedCommands:',
       `  - command: ${command}`,
-      `    argsPrefix: [${args.map(JSON.stringify).join(', ')}]`
+      `    argsPrefix: [${args.map((arg) => JSON.stringify(arg)).join(', ')}]`
     ].join('\n'));
 
     expect(() => loadHarnessConfig({ cwd })).toThrow(/allow|危险|配置无效/);

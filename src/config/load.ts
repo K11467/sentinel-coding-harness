@@ -17,6 +17,16 @@ const dangerousCommandNames = new Set([
   'curl', 'wget', 'ssh', 'scp', 'sftp', 'ftp', 'nc', 'ncat', 'telnet', 'rm', 'git', 'sudo', 'dropdb'
 ]);
 const dependencyOperations = new Set(['install', 'i', 'add', 'update', 'ci', 'publish']);
+const interpreterAndWrapperCommands = new Set([
+  'sh', 'bash', 'zsh', 'fish', 'dash', 'ash', 'ksh', 'csh', 'tcsh',
+  'pwsh', 'powershell', 'cmd', 'cmd.exe', 'env',
+  'node', 'nodejs', 'deno', 'bun', 'python', 'python2', 'python3', 'pypy', 'perl', 'ruby', 'php', 'lua', 'rscript',
+  'npx', 'tsx', 'ts-node', 'babel-node', 'jsc', 'qjs', 'd8',
+  'command', 'exec', 'eval', 'source', 'xargs', 'timeout', 'nice', 'nohup', 'setsid', 'stdbuf'
+]);
+const interpreterSemanticArguments = new Set([
+  '-c', '-e', '--eval', '--execute', '--command', '-command', '/c', '/k'
+]);
 
 const trustedTestCommandSchema = z.object({
   command: z.string().min(1),
@@ -77,23 +87,56 @@ function commandName(command: string): string {
   return basename(command).toLowerCase();
 }
 
-function assertTrustedTestCommand(command: TrustedTestCommand): void {
-  if (!isSafeToken(command.command)) {
-    throw new HarnessConfigLoadError('配置无效：testCommand.command 必须是单个安全可执行文件 token。');
+function isInterpreterSemanticArgument(argument: string): boolean {
+  const normalized = argument.toLowerCase();
+  return interpreterSemanticArguments.has(normalized)
+    || /^(?:-[ce].+|--(?:eval|execute|command)=)/.test(normalized);
+}
+
+function assertConservativeExecutable(command: string, field: string): string {
+  if (!isSafeToken(command)) {
+    throw new HarnessConfigLoadError(`配置无效：${field} 必须是单个安全可执行文件 token。`);
   }
-  if (command.args.some((arg) => !isSafeArgument(arg))) {
-    throw new HarnessConfigLoadError('配置无效：testCommand.args 不得包含 shell 控制字符。');
+  const name = commandName(command);
+  if (interpreterAndWrapperCommands.has(name)) {
+    throw new HarnessConfigLoadError(`危险 allow 配置：${field} 不得使用解释器或 wrapper ${name}。`);
+  }
+  return name;
+}
+
+function assertConservativeArguments(argumentsList: readonly string[], field: string): void {
+  if (argumentsList.some((arg) => !isSafeArgument(arg))) {
+    throw new HarnessConfigLoadError(`配置无效：${field} 不得包含 shell 控制字符。`);
+  }
+  if (argumentsList.some(isInterpreterSemanticArgument)) {
+    throw new HarnessConfigLoadError(`危险 allow 配置：${field} 不得包含解释器执行语义。`);
+  }
+}
+
+function isTrustedNpmPrefix(args: readonly string[]): boolean {
+  return args[0] === 'test' || (args[0] === 'run' && args[1] === 'lint');
+}
+
+function assertTrustedTestCommand(command: TrustedTestCommand): void {
+  assertConservativeArguments(command.args, 'testCommand.args');
+  assertConservativeExecutable(command.command, 'testCommand.command');
+  if (command.command !== 'npm' || !isTrustedNpmPrefix(command.args)) {
+    throw new HarnessConfigLoadError('配置无效：testCommand 仅允许受信的 npm test 或 npm run lint 前缀。');
   }
 }
 
 function assertSafeAllowedCommands(config: Pick<HarnessConfig, 'allowedCommands'>): void {
   for (const rule of config.allowedCommands) {
-    const name = commandName(rule.command);
+    assertConservativeArguments(rule.argsPrefix, 'allowedCommands.argsPrefix');
+    const name = assertConservativeExecutable(rule.command, 'allowedCommands.command');
     if (dangerousCommandNames.has(name)) {
       throw new HarnessConfigLoadError(`危险 allow 配置：allowedCommands 不得允许 ${name}。`);
     }
     if (dependencyCommands.has(name) && (rule.argsPrefix.length === 0 || dependencyOperations.has(rule.argsPrefix[0].toLowerCase()))) {
       throw new HarnessConfigLoadError('危险 allow 配置：allowedCommands 不得允许依赖安装、更新或发布。');
+    }
+    if (name === 'npm' && !isTrustedNpmPrefix(rule.argsPrefix)) {
+      throw new HarnessConfigLoadError('危险 allow 配置：allowedCommands 中 npm 仅允许 test 或 run lint 前缀。');
     }
   }
 }
@@ -114,7 +157,7 @@ function assertSafeAllowPolicies(config: Pick<HarnessConfig, 'policyRules'>): vo
       throw new HarnessConfigLoadError('危险 allow 配置：run_command 的 allow 策略必须限制具体 command。');
     }
     for (const command of match.commands ?? []) {
-      const name = commandName(command);
+      const name = assertConservativeExecutable(command, 'policyRules.match.commands');
       if (dangerousCommandNames.has(name) || dependencyCommands.has(name)) {
         throw new HarnessConfigLoadError(`危险 allow 配置：策略不得允许 ${name}。`);
       }
