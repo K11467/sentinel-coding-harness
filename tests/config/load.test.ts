@@ -92,6 +92,46 @@ describe('loadHarnessConfig', () => {
     await expect(load(content)).rejects.toThrow(/testCommand|配置无效/);
   });
 
+  const interpreterPayloads = [
+    { name: 'sh -c', command: 'sh', args: ['-c', 'echo unsafe'] },
+    { name: 'bash -c', command: 'bash', args: ['-c', 'echo unsafe'] },
+    { name: 'node -e', command: 'node', args: ['-e', '1'] },
+    { name: 'env sh -c wrapper', command: 'env', args: ['sh', '-c', 'echo unsafe'] }
+  ];
+
+  test.each(interpreterPayloads)('rejects interpreter payload from testCommand without creating executable config: $name', async ({ command, args }) => {
+    const cwd = await workspace();
+    await yaml(cwd, `testCommand: { command: ${command}, args: [${args.map(JSON.stringify).join(', ')}] }\n`);
+
+    expect(() => loadHarnessConfig({ cwd })).toThrow(/testCommand|危险|配置无效/);
+  });
+
+  test.each(interpreterPayloads)('rejects interpreter payload from allowedCommands without creating executable config: $name', async ({ command, args }) => {
+    const cwd = await workspace();
+    await yaml(cwd, [
+      'testCommand: { command: npm, args: [test] }',
+      'allowedCommands:',
+      `  - command: ${command}`,
+      `    argsPrefix: [${args.map(JSON.stringify).join(', ')}]`
+    ].join('\n'));
+
+    expect(() => loadHarnessConfig({ cwd })).toThrow(/allow|危险|配置无效/);
+  });
+
+  test.each(interpreterPayloads)('rejects interpreter executable from allow policy without creating executable config: $name', async ({ command }) => {
+    const cwd = await workspace();
+    await yaml(cwd, [
+      'testCommand: { command: npm, args: [test] }',
+      'policyRules:',
+      '  - id: unsafe-interpreter',
+      '    effect: allow',
+      '    risk: low',
+      `    match: { commands: [${command}] }`
+    ].join('\n'));
+
+    expect(() => loadHarnessConfig({ cwd })).toThrow(/allow|危险|配置无效/);
+  });
+
   test('loads the committed example without allowing model-provided test commands', async () => {
     expect(loadHarnessConfig({
       cwd: process.cwd(),
