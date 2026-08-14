@@ -177,6 +177,7 @@ export class FileSessionStore implements ApprovalStateStore {
       await this.operations.writeNewText(temporaryPath, serialized);
       await this.operations.chmod(temporaryPath, 0o600);
       await this.operations.rename(temporaryPath, this.filePath);
+      await this.operations.chmod(this.filePath, 0o600);
       replaced = true;
     } catch {
       throw new ApprovalStorageError('io_failure', '无法原子写入审批状态文件。');
@@ -204,9 +205,11 @@ export class FileSessionStore implements ApprovalStateStore {
     const lockPath = `${this.filePath}.lock`;
     const deadline = Date.now() + 1_000;
     await this.operations.ensureDirectory(directory);
+    await this.operations.chmod(directory, 0o700);
     while (true) {
       try {
         await this.operations.createLock(lockPath);
+        await this.operations.chmod(lockPath, 0o600);
         break;
       } catch (error) {
         if (!isAlreadyExists(error) || Date.now() >= deadline) {

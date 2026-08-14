@@ -39,6 +39,27 @@ export const approvalRecordSchema = z.object({
   if (record.status === 'consumed' && (record.approvedAt === undefined || record.consumedAt === undefined)) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['consumedAt'], message: '已消费记录必须包含批准和消费时间。' });
   }
+  const eventTimes = [
+    ['approvedAt', record.approvedAt],
+    ['rejectedAt', record.rejectedAt],
+    ['consumedAt', record.consumedAt]
+  ] as const;
+  for (const [field, value] of eventTimes) {
+    if (value !== undefined && Date.parse(value) < createdAt) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: '审批事件时间不得早于创建时间。' });
+    }
+  }
+  if (record.approvedAt !== undefined && Date.parse(record.approvedAt) > expiresAt) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['approvedAt'], message: '批准时间不得晚于审批过期时间。' });
+  }
+  if (record.consumedAt !== undefined) {
+    if (Date.parse(record.consumedAt) > expiresAt) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['consumedAt'], message: '消费时间不得晚于审批过期时间。' });
+    }
+    if (record.approvedAt !== undefined && Date.parse(record.consumedAt) < Date.parse(record.approvedAt)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['consumedAt'], message: '消费时间不得早于批准时间。' });
+    }
+  }
 });
 
 export type ApprovalRecord = z.infer<typeof approvalRecordSchema>;
