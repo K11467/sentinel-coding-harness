@@ -48,6 +48,8 @@ export interface ProductionRuntimeOptions {
   readonly clientFactory?: (input: { credentials: CredentialReader; config: LoadedHarnessConfig }) => LLMClient;
   readonly sessionStoreFactory?: (statePath: string) => ApprovalStateStore;
   readonly auditLogFactory?: (auditPath: string) => AuditLog;
+  /** Test seam; production uses ToolDispatcher over the fenced workspace and command tools. */
+  readonly dispatcherFactory?: (input: { config: LoadedHarnessConfig; sessionId: string }) => ActionDispatcher;
   readonly sessionIdFactory?: () => string;
   readonly now?: () => Date;
 }
@@ -89,19 +91,16 @@ export function createProductionRuntime(options: ProductionRuntimeOptions): Prod
     const policy = new PolicyEngine(config);
     const approval = new ApprovalService(store, policy, { clock: now });
     const audit = auditLogFactory(join(sentinelDirectory, 'audit.jsonl'));
-    const dispatcher = auditedDispatcher(
-      new ToolDispatcher({
-        workspace: new WorkspaceTools(config.workspaceRoot),
-        commands: new CommandTools({
-          allowedCommands: config.allowedCommands,
-          workspaceRoot: config.workspaceRoot,
-          testCommand: config.testCommand,
-        }),
-        feedback: new FeedbackSummarizer(),
+    const rawDispatcher = options.dispatcherFactory?.({ config, sessionId }) ?? new ToolDispatcher({
+      workspace: new WorkspaceTools(config.workspaceRoot),
+      commands: new CommandTools({
+        allowedCommands: config.allowedCommands,
+        workspaceRoot: config.workspaceRoot,
+        testCommand: config.testCommand,
       }),
-      audit,
-      sessionId,
-    );
+      feedback: new FeedbackSummarizer(),
+    });
+    const dispatcher = auditedDispatcher(rawDispatcher, audit, sessionId);
     const loop = new AgentLoop({
       config,
       client: clientFactory({ credentials: options.credentials, config }),
@@ -113,6 +112,9 @@ export function createProductionRuntime(options: ProductionRuntimeOptions): Prod
       now,
       onPolicyDecision: async ({ sessionId, action, decision }) => {
         await appendPolicyDecision(audit, sessionId, action, decision);
+      },
+      onStateTransition: async ({ sessionId, from, to, stopReason }) => {
+        await appendStateTransition(audit, sessionId, from, to, stopReason);
       },
     });
     return { store, policy, approval, audit, dispatcher, loop };
@@ -129,9 +131,7 @@ export function createProductionRuntime(options: ProductionRuntimeOptions): Prod
         recentFeedback: [],
       });
       const parts = partsFor(config, initial.id);
-      const result = await parts.loop.run(initial);
-      await appendStateTransition(parts.audit, initial.id, initial.status, result);
-      return result;
+      return parts.loop.run(initial);
     },
 
     async resume({ sessionId, config }): Promise<SessionState> {
@@ -141,9 +141,7 @@ export function createProductionRuntime(options: ProductionRuntimeOptions): Prod
       if (stored.session.status !== 'running') {
         throw new RuntimeOperationError('该会话当前不能恢复；请检查审批或终止状态。');
       }
-      const result = await parts.loop.run(stored.session);
-      await appendStateTransition(parts.audit, sessionId, stored.session.status, result);
-      return result;
+      return parts.loop.run(stored.session);
     },
 
     async approve({ sessionId, actionHash, config }): Promise<SessionState> {
@@ -156,26 +154,28 @@ export function createProductionRuntime(options: ProductionRuntimeOptions): Prod
         throw new RuntimeOperationError('批准后的动作未能安全领取；不会执行。');
       }
 
-      // claim() already recomputes PolicyEngine, then this fresh dispatcher repeats
-      // the workspace/path fence immediately before the only actual execution.
-      await appendStateTransition(parts.audit, sessionId, 'waiting_approval', claimed.session);
-      await appendPolicyDecision(parts.audit, sessionId, claimed.action, parts.policy.decide(claimed.action));
-      const feedback = await parts.dispatcher.dispatch(claimed.action);
-      const recorded = feedbackSummarySchema.safeParse({
-        ...feedback,
-        actionId: claimed.action.id,
-        createdAt: now().toISOString(),
-      });
-      if (!recorded.success) throw new RuntimeOperationError('已批准动作的受控反馈无效；不会继续会话。');
+      try {
+        // claim() already recomputes PolicyEngine, then this fresh dispatcher repeats
+        // the workspace/path fence immediately before the only actual execution.
+        await appendStateTransition(parts.audit, sessionId, 'waiting_approval', claimed.session.status);
+        await appendPolicyDecision(parts.audit, sessionId, claimed.action, parts.policy.decide(claimed.action));
+        const feedback = await parts.dispatcher.dispatch(claimed.action);
+        const recorded = feedbackSummarySchema.safeParse({
+          ...feedback,
+          actionId: claimed.action.id,
+          createdAt: now().toISOString(),
+        });
+        if (!recorded.success) throw new RuntimeOperationError('已批准动作的受控反馈无效；不会继续会话。');
 
-      const resumed = sessionStateSchema.parse({
-        ...claimed.session,
-        recentFeedback: [...claimed.session.recentFeedback, recorded.data].slice(-maxRecentFeedback),
-      });
-      await parts.store.save(resumed);
-      const result = await parts.loop.run(resumed);
-      await appendStateTransition(parts.audit, sessionId, resumed.status, result);
-      return result;
+        const resumed = sessionStateSchema.parse({
+          ...claimed.session,
+          recentFeedback: [...claimed.session.recentFeedback, recorded.data].slice(-maxRecentFeedback),
+        });
+        await parts.store.save(resumed);
+        return await parts.loop.run(resumed);
+      } catch {
+        return settleClaimFailure(parts, sessionId, claimed.session);
+      }
     },
 
     async reject({ sessionId, actionHash, config }): Promise<SessionState> {
@@ -184,7 +184,7 @@ export function createProductionRuntime(options: ProductionRuntimeOptions): Prod
       if (!rejected.ok || rejected.session === undefined) {
         throw new RuntimeOperationError('拒绝失败：审批请求不可用或状态已改变。');
       }
-      await appendStateTransition(parts.audit, sessionId, 'waiting_approval', rejected.session);
+      await appendStateTransition(parts.audit, sessionId, 'waiting_approval', rejected.session.status, rejected.session.stopReason);
       return rejected.session;
     },
 
@@ -239,14 +239,32 @@ async function appendStateTransition(
   audit: AuditLog,
   sessionId: string,
   from: SessionState['status'],
-  result: SessionState,
+  to: SessionState['status'],
+  stopReason?: SessionState['stopReason'],
 ): Promise<void> {
-  if (from === result.status) return;
+  if (from === to) return;
   await audit.append({
     sessionId,
     event: 'state_transition',
-    state: { from, to: result.status, ...(result.stopReason === undefined ? {} : { reason: result.stopReason }) },
+    state: { from, to, ...(stopReason === undefined ? {} : { reason: stopReason }) },
   });
+}
+
+/** Never leave a claimed approval as running when its post-claim work fails. */
+async function settleClaimFailure(parts: RuntimeParts, sessionId: string, claimed: SessionState): Promise<SessionState> {
+  const { pendingAction: _pendingAction, stopReason: _stopReason, ...active } = claimed;
+  const failed = sessionStateSchema.parse({ ...active, status: 'failed', stopReason: 'tool_error' });
+  try {
+    await parts.store.save(failed);
+  } catch {
+    // A storage failure cannot be recovered here; never surface a raw underlying error.
+  }
+  try {
+    await appendStateTransition(parts.audit, sessionId, claimed.status, failed.status, failed.stopReason);
+  } catch {
+    // Audit is best effort after a failure; persisted state remains authoritative.
+  }
+  return failed;
 }
 
 function auditAction(action: Action): { type: Action['type']; reason: string; path?: string; command?: string; content?: string } {

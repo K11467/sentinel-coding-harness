@@ -48,6 +48,13 @@ export interface AgentLoopOptions {
   approval?: ApprovalService;
   /** Durable observers may record a redacted policy decision before dispatch. */
   onPolicyDecision?: (input: { sessionId: string; action: Action; decision: PolicyDecision }) => Promise<void>;
+  /** Emits every status transition after its durable session write succeeds. */
+  onStateTransition?: (input: {
+    sessionId: string;
+    from: SessionStatus;
+    to: SessionStatus;
+    stopReason?: StopReason;
+  }) => Promise<void>;
 }
 
 export class AgentLoop {
@@ -64,8 +71,10 @@ export class AgentLoop {
     let previousActionFingerprint: string | undefined;
 
     if (session.status === 'created') {
+      const previous = session;
       session = this.toRunning(session);
       await this.options.sessions.save(session);
+      await this.notifyStateTransition(previous, session);
     }
 
     while (session.status === 'running') {
@@ -104,6 +113,7 @@ export class AgentLoop {
           if (!requested.ok || requested.session === undefined) {
             return this.stop(session, 'blocked', 'policy_denied');
           }
+          await this.notifyStateTransition(session, requested.session);
           return requested.session;
         } catch {
           return this.stop(session, 'blocked', 'policy_denied');
@@ -192,7 +202,18 @@ export class AgentLoop {
     const { pendingAction: _pendingAction, stopReason: _previousReason, ...terminal } = session;
     const next = sessionStateSchema.parse({ ...terminal, status, stopReason });
     await this.options.sessions.save(next);
+    await this.notifyStateTransition(session, next);
     return next;
+  }
+
+  private async notifyStateTransition(from: SessionState, to: SessionState): Promise<void> {
+    if (from.status === to.status) return;
+    await this.options.onStateTransition?.({
+      sessionId: to.id,
+      from: from.status,
+      to: to.status,
+      ...(to.stopReason === undefined ? {} : { stopReason: to.stopReason }),
+    });
   }
 }
 
