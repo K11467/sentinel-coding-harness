@@ -58,4 +58,41 @@ describe('FeedbackSummarizer', () => {
     expect(summarize({ exitCode: 0 })).toEqual({ category: 'passed', summary: '测试通过。' });
     expect(summarize({ exitCode: 1 })).toEqual({ category: 'command_error', summary: '命令失败（退出码 1）。' });
   });
+
+  test.each([
+    ['大小写混合的 Basic Authorization', 'aUtHoRiZaTiOn: bAsIc basic-secret-value', 'basic-secret-value'],
+    ['Token Authorization', 'Authorization: Token token-secret-value', 'token-secret-value'],
+    ['JSON Authorization 字段', '{"Authorization":"Bearer json-secret-value"}', 'json-secret-value'],
+    ['headers 中的 authorization 字段', 'headers: { authorization: "Bearer header-secret-value" }', 'header-secret-value'],
+    ['Cookie', 'Cookie: session=cookie-secret-value', 'cookie-secret-value'],
+    ['X-Api-Key', 'X-Api-Key: x-api-key-secret-value', 'x-api-key-secret-value'],
+    ['api_key', 'api_key=api-key-secret-value', 'api-key-secret-value'],
+    ['password', 'password: password-secret-value', 'password-secret-value'],
+    ['PEM', '-----BEGIN PRIVATE KEY----- pem-secret-value -----END PRIVATE KEY-----', 'pem-secret-value'],
+    ['长疑似密钥', `diagnostic ${'A'.repeat(96)}`, 'A'.repeat(96)]
+  ])('%s 不会进入摘要', (_name, output, secret) => {
+    const result = summarize({ exitCode: 1, stderr: output });
+
+    expect(result.summary).not.toContain(secret);
+  });
+
+  test('多字节输出按 UTF-8 4KiB 边界截断后才分类', () => {
+    const result = summarize({
+      exitCode: 1,
+      stdout: '你'.repeat(1365),
+      stderr: 'AssertionError: this appears after 4KiB'
+    });
+
+    expect(result.category).toBe('command_error');
+  });
+
+  test('跨 4KiB 边界的敏感内容不会进入摘要', () => {
+    const secret = 'cross-boundary-secret-should-not-leak';
+    const result = summarize({
+      exitCode: 1,
+      stderr: `${'x'.repeat(480)}Authorization: Basic ${secret}${'y'.repeat(MAX_FEEDBACK_INPUT_CHARS)}`
+    });
+
+    expect(result.summary).not.toContain(secret);
+  });
 });
