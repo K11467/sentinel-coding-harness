@@ -2,7 +2,6 @@ import { describe, expect, test } from 'vitest';
 import {
   KEYCHAIN_ACCOUNT,
   KEYCHAIN_SERVICE,
-  KeychainError,
   MacOSKeychain,
   type SecurityProcessOptions,
   type SecurityProcessResult,
@@ -26,7 +25,7 @@ function macosKeychain(runner = new FakeProcessRunner()): MacOSKeychain {
 
 describe('MacOSKeychain', () => {
   test('set 仅经受控 stdin 传递内存 secret，命令参数中没有 key', async () => {
-    const secret = 'sk-test-secret-never-in-args';
+    const secret = 'test-secret-never-in-args';
     const runner = new FakeProcessRunner();
 
     await macosKeychain(runner).set(secret);
@@ -42,7 +41,7 @@ describe('MacOSKeychain', () => {
   });
 
   test('status 只返回存在与否，且不回显 security 输出', async () => {
-    const secret = 'sk-status-must-not-escape';
+    const secret = 'status-secret-must-not-escape';
     const runner = new FakeProcessRunner({ exitCode: 0, stdout: secret, stderr: secret });
 
     await expect(macosKeychain(runner).status()).resolves.toEqual({ exists: true });
@@ -57,8 +56,8 @@ describe('MacOSKeychain', () => {
     const runner = new FakeProcessRunner();
     const keychain = macosKeychain(runner);
 
-    await expect(keychain.set(undefined)).rejects.toMatchObject<KeychainError>({ code: 'INPUT_CANCELLED' });
-    await expect(keychain.set('')).rejects.toMatchObject<KeychainError>({ code: 'INPUT_MISSING' });
+    await expect(keychain.set(undefined)).rejects.toMatchObject({ code: 'INPUT_CANCELLED' });
+    await expect(keychain.set('')).rejects.toMatchObject({ code: 'INPUT_MISSING' });
     expect(runner.calls).toHaveLength(0);
   });
 
@@ -66,7 +65,7 @@ describe('MacOSKeychain', () => {
     const runner = new FakeProcessRunner();
     const keychain = new MacOSKeychain({ platform: 'linux', runner });
 
-    await expect(keychain.status()).rejects.toMatchObject<KeychainError>({ code: 'UNSUPPORTED_PLATFORM' });
+    await expect(keychain.status()).rejects.toMatchObject({ code: 'UNSUPPORTED_PLATFORM' });
     expect(runner.calls).toHaveLength(0);
   });
 
@@ -79,7 +78,7 @@ describe('MacOSKeychain', () => {
   test('clear 仅删除固定 item，缺失时给出操作性错误', async () => {
     const runner = new FakeProcessRunner({ exitCode: 44, stderr: 'not found' });
 
-    await expect(macosKeychain(runner).clear()).rejects.toMatchObject<KeychainError>({ code: 'NOT_FOUND' });
+    await expect(macosKeychain(runner).clear()).rejects.toMatchObject({ code: 'NOT_FOUND' });
     expect(runner.calls[0]).toEqual({
       command: 'security',
       args: ['delete-generic-password', '-s', KEYCHAIN_SERVICE, '-a', KEYCHAIN_ACCOUNT],
@@ -88,10 +87,10 @@ describe('MacOSKeychain', () => {
   });
 
   test('Keychain 锁定和命令错误均脱敏，不带 stderr 中的 secret', async () => {
-    const secret = 'sk-error-must-not-escape';
+    const secret = 'error-secret-must-not-escape';
     const runner = new FakeProcessRunner({ exitCode: 1, stderr: `User interaction is not allowed: ${secret}` });
 
-    await expect(macosKeychain(runner).clear()).rejects.toMatchObject<KeychainError>({ code: 'KEYCHAIN_LOCKED' });
+    await expect(macosKeychain(runner).clear()).rejects.toMatchObject({ code: 'KEYCHAIN_LOCKED' });
     await expect(macosKeychain(runner).clear()).rejects.not.toThrow(secret);
   });
 });
