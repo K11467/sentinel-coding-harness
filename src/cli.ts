@@ -151,7 +151,7 @@ function splitConfigArgument(args: readonly string[]): { positional: string[]; c
       continue;
     }
     if (argument.startsWith('--')) {
-      throw new CliUsageError(`不支持的选项：${argument}`);
+      throw new CliUsageError('不支持的选项。');
     }
     positional.push(argument);
   }
@@ -170,7 +170,7 @@ function safeErrorMessage(error: unknown): string {
 }
 
 function usage(): string {
-  return '用法：sentinel <config check|run <task>|resume <session>|approve <session> <hash>|reject <session> <hash>|credentials status|credentials set|credentials clear|demo> [--config <path>]';
+  return '用法：sentinel <config check|run <task>|resume <session>|approve <session> <hash>|reject|deny <session> <hash>|credentials status|credentials set|credentials clear|demo> [--config <path>]';
 }
 
 function loadCliConfig(
@@ -302,12 +302,13 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
       return EXIT.OK;
     }
 
-    if (argv[0] === 'run' || argv[0] === 'resume' || argv[0] === 'approve' || argv[0] === 'reject') {
-      return await runSessionCommand(argv[0], argv.slice(1), loadConfig, cwd, credentials, runtime, writeStdout);
+    if (argv[0] === 'run' || argv[0] === 'resume' || argv[0] === 'approve' || argv[0] === 'reject' || argv[0] === 'deny') {
+      const command = argv[0] === 'deny' ? 'reject' : argv[0];
+      return await runSessionCommand(command, argv.slice(1), loadConfig, cwd, credentials, runtime, writeStdout);
     }
 
     if (argv[0] !== 'config' || argv[1] !== 'check') {
-      throw new CliUsageError(`未知命令：${argv.join(' ') || '(empty)'}。${usage()}`);
+      throw new CliUsageError(`未知命令。${usage()}`);
     }
 
     const configPath = parseConfigPath(argv.slice(2));
